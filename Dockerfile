@@ -16,7 +16,7 @@ ENV NEXT_TELEMETRY_DISABLED=1
 RUN npm run build
 
 FROM ${NODE_IMAGE} AS runner
-WORKDIR /app
+WORKDIR /app/app
 
 LABEL org.opencontainers.image.title="9router"
 
@@ -50,4 +50,4 @@ RUN apk --no-cache upgrade && apk --no-cache add su-exec && \
 EXPOSE 20218
 
 ENTRYPOINT ["/entrypoint.sh"]
-CMD ["node", "app/server.js"]
+CMD ["node", "server.js"]
