@@ -1,0 +1,23 @@
+# fly.toml app configuration file generated for 9router-nmsymg on 2026-05-12T06:08:48Z
+#
+# See https://fly.io/docs/reference/configuration/ for information about how to use this file.
+#
+
+app = '9router-nmsymg'
+primary_region = 'sin'
+
+[build]
+
+[http_service]
+  internal_port = 20218
+  force_https = true
+  auto_stop_machines = 'stop'
+  auto_start_machines = true
+  min_machines_running = 0
+  processes = ['app']
+
+[[vm]]
+  memory = '1gb'
+  cpu_kind = 'shared'
+  cpus = 1
+  memory_mb = 256
