@@ -16,7 +16,7 @@ ENV NEXT_TELEMETRY_DISABLED=1
 RUN npm run build
 
 FROM ${NODE_IMAGE} AS runner
-WORKDIR /app/app
+WORKDIR /app
 
 LABEL org.opencontainers.image.title="9router"
 
@@ -29,14 +29,10 @@ ENV DATA_DIR=/app/data
 COPY --from=builder /app/public ./public
 COPY --from=builder /app/.next/static ./.next/static
 COPY --from=builder /app/.next/standalone/app ./
-COPY --from=builder /app/.next/standalone/server.js ./server.js
 COPY --from=builder /app/open-sse ./open-sse
 # Next file tracing can omit sibling files; MITM runs server.js as a separate process.
 COPY --from=builder /app/src/mitm ./src/mitm
-# Standalone node_modules may omit deps only required by the MITM child process.
-COPY --from=builder /app/node_modules/node-forge ./node_modules/node-forge
-# Ensure `next` is available at runtime in case tracing did not include it.
-COPY --from=builder /app/node_modules/next ./node_modules/next
+COPY --from=builder /app/node_modules ./node_modules
 
 RUN mkdir -p /app/data && chown -R node:node /app && \
   mkdir -p /app/data-home && chown node:node /app/data-home && \
