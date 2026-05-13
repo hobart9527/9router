@@ -90,12 +90,13 @@ appPkg.version = cliPkg.version;
 fs.writeFileSync(appPkgPath, JSON.stringify(appPkg, null, 2) + "\n");
 console.log(`✅ Version synced: ${cliPkg.version}\n`);
 
-// Step 1: Build app with Next.js
+// Step 1: Build app with Next.js (workspace tracing root → traced node_modules in standalone).
 console.log("1️⃣  Building Next.js app...");
 try {
-  execSync("npm run build", { 
+  execSync("npm run build", {
     stdio: "inherit",
-    cwd: appDir 
+    cwd: appDir,
+    env: { ...process.env, NEXT_TRACING_ROOT_MODE: "workspace" }
   });
   console.log("✅ Next.js build completed\n");
 } catch (error) {
@@ -111,15 +112,23 @@ if (fs.existsSync(cliAppDir)) {
 console.log("✅ Cleaned\n");
 
 // Step 3: Copy Next.js standalone build to app/cli/app.
-// With outputFileTracingRoot = projectRoot, server.js + node_modules live flat under .next/standalone/.
+// With workspace tracing root, Next places app files under .next/standalone/app/ and traced
+// node_modules under .next/standalone/node_modules/ (slim, tracing-pruned).
 console.log("3️⃣  Copying Next.js standalone build to app/cli/app...");
 const standaloneRoot = path.join(appDir, ".next", "standalone");
-if (!fs.existsSync(path.join(standaloneRoot, "server.js"))) {
-  console.error("❌ Next.js standalone build not found at .next/standalone/server.js");
+const standaloneApp = path.join(standaloneRoot, "app");
+if (!fs.existsSync(standaloneApp)) {
+  console.error("❌ Next.js standalone build not found at .next/standalone/app");
   console.error("Make sure output: 'standalone' is set in next.config.js");
   process.exit(1);
 }
-copyRecursive(standaloneRoot, cliAppDir);
+copyRecursive(standaloneApp, cliAppDir);
+
+// Copy traced node_modules from standalone root into CLI bundle
+const standaloneNodeModules = path.join(standaloneRoot, "node_modules");
+if (fs.existsSync(standaloneNodeModules)) {
+  copyRecursive(standaloneNodeModules, path.join(cliAppDir, "node_modules"));
+}
 console.log("✅ Copied standalone build\n");
 
 // Step 3b: Ensure sql.js (pure JS fallback) bundled in app/cli/app/node_modules.
