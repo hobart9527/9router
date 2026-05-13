@@ -1,7 +1,7 @@
 # v0.4.37 (2026-05-13)
 
 ## Improvements
-- Harden Cowork MCP plugin handling
+- Stability improvements
 
 # v0.4.36 (2026-05-13)
 
