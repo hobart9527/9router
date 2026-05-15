@@ -32,6 +32,7 @@ const PROTECTED_API_PATHS = [
   "/api/provider-nodes/validate",
   "/api/cli-tools",
   "/api/mcp",
+  "/api/translator",
 ];
 
 // Routes that spawn child processes — restrict to localhost regardless of auth.

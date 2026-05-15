@@ -12,5 +12,6 @@ export const config = {
     "/api/provider-nodes/validate",
     "/api/cli-tools/:path*",
     "/api/mcp/:path*",
+    "/api/translator/:path*",
   ],
 };
