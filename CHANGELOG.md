@@ -1,4 +1,4 @@
-# v0.4.43 (2026-05-15)
+# v0.4.44 (2026-05-15)
 
 ## Features
 - Add Blackbox provider with `bb` alias (#1143)
