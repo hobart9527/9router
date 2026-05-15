@@ -387,6 +387,10 @@ export const PROVIDERS = {
     baseUrl: "https://api.xiaomimimo.com/v1/chat/completions",
     format: "openai"
   },
+  "xiaomi-tokenplan": {
+    baseUrl: "https://token-plan-sgp.xiaomimimo.com/v1/chat/completions",
+    format: "openai"
+  },
   // === Free-tier providers (synced from OmniRoute) ===
   // Claude-format with Claude CLI header spoofing (auth: x-api-key)
   agentrouter: { baseUrl: "https://agentrouter.org/v1/messages", format: "claude", headers: { ...CLAUDE_CLI_SPOOF_HEADERS } },
