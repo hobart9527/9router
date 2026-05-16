@@ -219,8 +219,12 @@ function killAllAppProcesses(appPort) {
           });
           const lines = output.split("\n").slice(1).filter(l => l.trim());
           lines.forEach(line => {
-            const isAppProcess = line.toLowerCase().includes("9router") ||
-              line.toLowerCase().includes("next-server");
+            // Whitelist: real node process running 9router/cli.js, or next-server.
+            // Avoids killing editors/grep/strace/cursor that just have "9router" in cmdline.
+            const cmd = line.toLowerCase();
+            const isAppProcess =
+              (cmd.includes("node") && cmd.includes("9router") && (cmd.includes("cli.js") || cmd.includes("\\9router") || cmd.includes("/9router")))
+              || cmd.includes("next-server");
             if (isAppProcess) {
               const match = line.match(/^"(\d+)"/);
               if (match && match[1] && match[1] !== process.pid.toString()) {
@@ -241,7 +245,12 @@ function killAllAppProcesses(appPort) {
           const lines = output.split('\n');
 
           lines.forEach(line => {
-            const isAppProcess = line.includes("9router") || line.includes("next-server");
+            // Whitelist: real node process running 9router/cli.js, or next-server.
+            // Avoids killing grep/strace/editors/cursor that incidentally match "9router".
+            const cmd = line.toLowerCase();
+            const isAppProcess =
+              (cmd.includes("node") && cmd.includes("9router") && (cmd.includes("cli.js") || cmd.includes("/9router")))
+              || cmd.includes("next-server");
             if (isAppProcess) {
               const parts = line.trim().split(/\s+/);
               const pid = parts[1];
@@ -685,10 +694,10 @@ function startServer(latestVersion) {
           const { clearScreen } = require("./src/cli/utils/display");
           clearScreen();
 
-          // Kill current tray FIRST so the new bgProcess can register a fresh
-          // NSStatusItem on macOS without conflicting with the orphan binary
-          try { require("./src/cli/tray/tray").killTray(); } catch (e) { }
-          await new Promise(r => setTimeout(r, 300));
+          // Kill current tray and AWAIT Go binary fully exit. macOS needs the
+          // old NSStatusItem released before a new tray process can register;
+          // otherwise the bgProcess tray silently fails ("works sometimes").
+          try { await require("./src/cli/tray/tray").killTray(); } catch (e) { }
 
           // Enable auto startup on OS boot
           try {
@@ -699,10 +708,18 @@ function startServer(latestVersion) {
             }
           } catch (e) { }
 
+          // Log bgProcess stderr to file so silent tray failures are debuggable.
+          // Previously stdio:"ignore" swallowed every error from systray2 init.
+          const logDir = path.join(getAppDataDir(), "logs");
+          try { fs.mkdirSync(logDir, { recursive: true }); } catch (e) { }
+          const bgLogPath = path.join(logDir, "tray-bg.log");
+          let bgLogFd = "ignore";
+          try { bgLogFd = fs.openSync(bgLogPath, "a"); } catch (e) { }
+
           // Spawn new detached process with --tray flag
           const bgProcess = spawn(process.execPath, [__filename, "--tray", "--skip-update", "-p", port.toString()], {
             detached: true,
-            stdio: "ignore",
+            stdio: ["ignore", bgLogFd, bgLogFd],
             windowsHide: true,
             env: { ...process.env }
           });

@@ -208,7 +208,7 @@ function initUnixTray(options) {
       items
     };
 
-    trayInstance = new SysTray({ menu, debug: false, copyDir: false });
+    trayInstance = new SysTray({ menu, debug: false, copyDir: true });
     isWinTray = false;
 
     trayInstance.onClick((action) => {
@@ -245,31 +245,49 @@ function initUnixTray(options) {
 }
 
 /**
- * Kill/close system tray gracefully
+ * Kill tray, wait Go binary fully exit (returns Promise).
+ * Critical for hide-to-tray: macOS must release NSStatusItem before bgProcess
+ * spawns a new tray, otherwise the new icon silently fails to register.
  */
 function killTray() {
   const instance = trayInstance;
   const wasWin = isWinTray;
   trayInstance = null;
+  if (!instance) return Promise.resolve();
 
-  if (instance) {
-    try {
-      if (wasWin) instance.kill();
-      else {
-        // systray2.kill(false) closes IPC but leaves the Go tray binary
-        // subprocess running, which keeps an orphan NSStatusItem on macOS
-        // and blocks a freshly spawned tray (e.g. hide-to-tray bgProcess)
-        // from registering. Kill the child PID directly first.
-        try {
-          const proc = instance._process || (typeof instance.process === "function" ? instance.process() : null);
-          if (proc && proc.pid) {
-            process.kill(proc.pid, "SIGKILL");
-          }
-        } catch (e) {}
-        instance.kill(false);
-      }
-    } catch (e) {}
+  if (wasWin) {
+    try { instance.kill(); } catch (e) {}
+    return Promise.resolve();
   }
+
+  // Unix: get the Go tray child process handle, SIGKILL it, await "exit"
+  let proc = null;
+  try {
+    proc = instance._process || (typeof instance.process === "function" ? instance.process() : null);
+  } catch (e) {}
+
+  // Always close IPC (best-effort, may throw if pipe already broken)
+  const closeIpc = () => { try { instance.kill(false); } catch (e) {} };
+
+  if (!proc || !proc.pid) {
+    closeIpc();
+    return Promise.resolve();
+  }
+
+  return new Promise((resolve) => {
+    let done = false;
+    const finish = () => { if (done) return; done = true; closeIpc(); resolve(); };
+
+    proc.once("exit", finish);
+    try { proc.kill("SIGKILL"); } catch (e) {}
+
+    // Fallback poll in case "exit" never fires (detached child, pipe closed)
+    const deadline = Date.now() + 3000;
+    const poll = setInterval(() => {
+      try { process.kill(proc.pid, 0); } catch { clearInterval(poll); finish(); return; }
+      if (Date.now() > deadline) { clearInterval(poll); finish(); }
+    }, 50);
+  });
 }
 
 /**
