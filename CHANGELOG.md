@@ -1,3 +1,11 @@
+# v0.4.50 (2026-05-16)
+
+## Fixes
+- Fix duplicate tray icon on macOS when hiding to tray
+- Fix tray not showing in background mode on macOS
+- Fix hide to tray broken on Windows/Linux
+- Fix Shutdown button in web UI not working
+
 # v0.4.49 (2026-05-16)
 
 ## Features
