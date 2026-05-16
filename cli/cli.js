@@ -646,6 +646,10 @@ function startServer(latestVersion) {
 
   // Tray-only mode: no TUI, just tray icon
   if (trayMode) {
+    // Ignore SIGHUP so macOS terminal close doesn't kill the background tray process
+    process.removeAllListeners("SIGHUP");
+    process.on("SIGHUP", () => {});
+
     console.log(`\n🚀 ${pkg.name} v${pkg.version}`);
     console.log(`Server: http://${displayHost}:${port}`);
 
@@ -690,55 +694,29 @@ function startServer(latestVersion) {
           await startTerminalUI(port);
           // Loop continues, show menu again
         } else if (choice === "hide") {
-          // Hide to tray - spawn detached background process
+          // Hide to tray: keep the CURRENT process alive (it already owns a
+          // macOS GUI session so NSStatusItem works). Spawning a detached child
+          // puts it outside the login session → systray silently fails on macOS.
           const { clearScreen } = require("./src/cli/utils/display");
           clearScreen();
 
-          // Kill current tray and AWAIT Go binary fully exit. macOS needs the
-          // old NSStatusItem released before a new tray process can register;
-          // otherwise the bgProcess tray silently fails ("works sometimes").
-          try { await require("./src/cli/tray/tray").killTray(); } catch (e) { }
-          // Extra delay so macOS NSStatusBar fully removes the old icon before
-          // bgProcess spawns a new one. Without this, two icons appear briefly.
-          await new Promise((r) => setTimeout(r, 400));
+          // Survive terminal close — SIGHUP is sent when the launching shell exits
+          process.removeAllListeners("SIGHUP");
+          process.on("SIGHUP", () => {});
 
           // Enable auto startup on OS boot
           try {
             const { enableAutoStart } = require("./src/cli/tray/autostart");
-            const enabled = enableAutoStart(__filename);
-            if (enabled) {
-              console.log("✅ Auto-start enabled (will run on OS boot)");
-            }
+            enableAutoStart(__filename);
           } catch (e) { }
 
-          // Log bgProcess stderr to file so silent tray failures are debuggable.
-          // Previously stdio:"ignore" swallowed every error from systray2 init.
-          const logDir = path.join(getAppDataDir(), "logs");
-          try { fs.mkdirSync(logDir, { recursive: true }); } catch (e) { }
-          const bgLogPath = path.join(logDir, "tray-bg.log");
-          let bgLogFd = "ignore";
-          try { bgLogFd = fs.openSync(bgLogPath, "a"); } catch (e) { }
-
-          // Spawn new detached process with --tray flag
-          const bgProcess = spawn(process.execPath, [__filename, "--tray", "--skip-update", "-p", port.toString()], {
-            detached: true,
-            stdio: ["ignore", bgLogFd, bgLogFd],
-            windowsHide: true,
-            env: { ...process.env }
-          });
-          bgProcess.unref();
-
-          console.log(`\n🔔 9Router is now running in background (PID: ${bgProcess.pid})`);
+          console.log(`\n🔔 9Router is running in tray (PID: ${process.pid})`);
           console.log(`   Server: http://${displayHost}:${port}`);
-          console.log(`\n💡 You can close this terminal. Right-click tray icon to:`);
-          console.log(`   • Open Dashboard`);
-          console.log(`   • Quit\n`);
+          console.log(`\n💡 You can close this terminal. Right-click tray icon to quit.\n`);
 
-          // Exit current process - background process takes over.
-          // Don't call cleanup() here: tray already killed above, and cleanup()
-          // would kill the server which bgProcess relies on staying alive.
-          isShuttingDown = true;
-          process.exit(0);
+          // Tray icon already running (initTrayIcon was called above at startup).
+          // Nothing more to do — event loop keeps process alive via tray + server.
+          return;
         } else if (choice === "exit") {
           isShuttingDown = true;
           console.log("\nExiting...");
