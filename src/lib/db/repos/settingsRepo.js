@@ -54,6 +54,8 @@ const DEFAULT_SETTINGS = {
   headroomUrl: DEFAULT_HEADROOM_URL,
   headroomCompressUserMessages: false,
   headroomTimeoutMs: 3000,
+  toolSchemaCompactEnabled: true,
+  toolSchemaDescMaxChars: 200,
   cavemanEnabled: false,
   cavemanLevel: "full",
   ponytailEnabled: false,
