@@ -104,6 +104,28 @@ describe("compactToolSchema — description truncation", () => {
     const { tools } = compactToolSchema([claudeTool()], { descMaxChars: 200 });
     expect(tools[0].input_schema.properties.offset.description).toBe("Line to start at.");
   });
+
+  it("clamps even when the first sentence alone exceeds the cap", () => {
+    const long = "IMPORTANT: this first sentence is deliberately far longer than the cap so the sentence-boundary rule cannot apply here. Second.";
+    const tool = { name: "x", description: long, input_schema: { type: "object", properties: {} } };
+    const { tools } = compactToolSchema([tool], { descMaxChars: 60 });
+    expect(tools[0].description.length).toBeLessThanOrEqual(60);
+  });
+
+  it("never returns a description longer than the configured cap", () => {
+    const cases = [
+      "Short first. " + "pad ".repeat(200),
+      "no terminator at all ".repeat(30),
+      "。中文句一。中文句二。".repeat(20),
+    ];
+    for (const desc of cases) {
+      for (const cap of [50, 100, 200]) {
+        const tool = { name: "x", description: desc, input_schema: { type: "object", properties: {} } };
+        const { tools } = compactToolSchema([tool], { descMaxChars: cap });
+        expect(tools[0].description.length).toBeLessThanOrEqual(cap);
+      }
+    }
+  });
 });
 
 describe("compactToolSchema — shape handling", () => {

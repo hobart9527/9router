@@ -52,15 +52,25 @@ function collapseWhitespace(value) {
   return value.replace(/\s+/g, " ").trim();
 }
 
+// Hard-cut `text` to at most `maxChars`, preferring the last word boundary so a
+// truncated description does not end mid-word.
+function cutAtWordBoundary(text, maxChars) {
+  const head = text.slice(0, maxChars);
+  const boundary = head.lastIndexOf(" ");
+  return (boundary > maxChars * 0.5 ? head.slice(0, boundary) : head).trim();
+}
+
 function truncateToFirstSentence(text, maxChars) {
   if (!(maxChars > 0) || text.length <= maxChars) return text;
   // Sentence boundary: . ! ? (or a CJK full stop) followed by whitespace/end.
   const match = text.match(/^[\s\S]*?[.!?。！？](?=\s|$)/);
-  if (match && match[0].length >= 20) return match[0].trim();
-  // No usable sentence break — hard-cut on a word boundary near the cap.
-  const head = text.slice(0, maxChars);
-  const boundary = head.lastIndexOf(" ");
-  return (boundary > maxChars * 0.5 ? head.slice(0, boundary) : head).trim();
+  // Keep the first sentence only when it fits the cap; a long opening sentence
+  // must still be clamped or the caller's limit would be silently exceeded.
+  if (match && match[0].length >= 20 && match[0].length <= maxChars) {
+    return match[0].trim();
+  }
+  // No usable sentence break (or the sentence overruns the cap) — hard-cut.
+  return cutAtWordBoundary(text, maxChars);
 }
 
 function compactDescription(desc, maxChars) {
