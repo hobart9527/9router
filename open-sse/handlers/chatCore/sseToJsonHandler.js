@@ -5,12 +5,17 @@ import { FORMATS } from "../../translator/formats.js";
 import { PROVIDERS } from "../../config/providers.js";
 import { buildRequestDetail, extractRequestConfig, saveUsageStats, formatDoneLine } from "./requestDetail.js";
 import { ROLE, RESPONSES_ITEM } from "../../translator/schema/index.js";
+import {
+  openAICompletionToResponses as chatCompletionToResponses,
+  openAICompletionToClaudeMessage,
+  extractToolCallsFromResponsesOutput,
+} from "./responseShapeConverters.js";
 
 // Responses-API providers (e.g. codex) may emit SSE without content-type + use Responses output shape
 const isResponsesProvider = (p) => PROVIDERS[p]?.format === FORMATS.OPENAI_RESPONSES;
 import { saveRequestDetail, appendRequestLog } from "@/lib/usageDb.js";
 
-function textFromResponsesMessageItem(item) {
+export function textFromResponsesMessageItem(item) {
   if (!item?.content || !Array.isArray(item.content)) return "";
   const byType = item.content.find((c) => c.type === "output_text");
   if (typeof byType?.text === "string") return byType.text;
@@ -33,76 +38,6 @@ function pickAssistantMessageForChatCompletion(output) {
   }
   const last = messages[messages.length - 1];
   return { msgItem: last, textContent: textFromResponsesMessageItem(last) };
-}
-
-/**
- * Convert an OpenAI Chat Completions JSON body into the Responses API shape.
- * Inlined here (not imported from nonStreamingHandler.js) to avoid a circular
- * import. Mirrors openAICompletionToResponses in nonStreamingHandler.js.
- */
-function extractCustomToolInput(argumentsValue) {
-  const argumentsText = typeof argumentsValue === "string" ? argumentsValue : JSON.stringify(argumentsValue || {});
-  try {
-    const parsed = JSON.parse(argumentsText);
-    if (parsed && typeof parsed === "object" && typeof parsed.input === "string") return parsed.input;
-  } catch { /* raw freeform input */ }
-  return argumentsText;
-}
-
-function chatCompletionToResponses(responseBody, customToolNames = null) {
-  const choice = responseBody?.choices?.[0];
-  if (!choice) return responseBody;
-
-  const message = choice.message || {};
-  const output = [];
-
-  const reasoning = message.reasoning_content || message.reasoning;
-  if (typeof reasoning === "string" && reasoning.length > 0) {
-    output.push({
-      type: RESPONSES_ITEM.REASONING,
-      summary: [{ type: RESPONSES_ITEM.SUMMARY_TEXT, text: reasoning }],
-    });
-  }
-
-  const text = typeof message.content === "string" ? message.content : "";
-  if (text.length > 0) {
-    output.push({
-      type: RESPONSES_ITEM.MESSAGE,
-      role: ROLE.ASSISTANT,
-      content: [{ type: RESPONSES_ITEM.OUTPUT_TEXT, text, annotations: [] }],
-    });
-  }
-
-  for (const tc of message.tool_calls || []) {
-    const fn = tc.function || {};
-    const custom = customToolNames?.has(fn.name);
-    output.push({
-      type: custom ? RESPONSES_ITEM.CUSTOM_TOOL_CALL : RESPONSES_ITEM.FUNCTION_CALL,
-      id: `${custom ? "ctc" : "fc"}_${tc.id || ""}`,
-      call_id: tc.id || "",
-      name: fn.name || "",
-      ...(custom
-        ? { input: extractCustomToolInput(fn.arguments) }
-        : { arguments: typeof fn.arguments === "string" ? fn.arguments : JSON.stringify(fn.arguments || {}) }),
-    });
-  }
-
-  const usage = responseBody.usage || {};
-  return {
-    id: `resp_${responseBody.id || ""}`.replace(/^resp_chatcmpl-/, "resp_"),
-    object: "response",
-    created_at: responseBody.created || Math.floor(Date.now() / 1000),
-    model: responseBody.model || "unknown",
-    status: "completed",
-    background: false,
-    error: null,
-    output,
-    usage: {
-      input_tokens: usage.prompt_tokens || usage.input_tokens || 0,
-      output_tokens: usage.completion_tokens || usage.output_tokens || 0,
-      total_tokens: usage.total_tokens || (usage.prompt_tokens || 0) + (usage.completion_tokens || 0),
-    },
-  };
 }
 
 /**
@@ -245,16 +180,8 @@ export async function handleForcedSSEToJson({ providerResponse, sourceFormat, ta
         : {};
       let finalResp;
 
-      // Extract tool calls from Responses API output (function_call items)
-      const funcCallItems = (jsonResponse.output || []).filter(item => item.type === "function_call");
-      const toolCalls = funcCallItems.map((item, idx) => ({
-        id: item.call_id || `call_${item.name}_${Date.now()}_${idx}`,
-        type: "function",
-        function: {
-          name: item.name,
-          arguments: typeof item.arguments === "string" ? item.arguments : JSON.stringify(item.arguments || {})
-        }
-      }));
+      // Extract tool calls from Responses API output (function_call + custom_tool_call)
+      const toolCalls = extractToolCallsFromResponsesOutput(jsonResponse.output);
       const hasToolCalls = toolCalls.length > 0;
 
       if (sourceFormat === FORMATS.ANTIGRAVITY || sourceFormat === FORMATS.GEMINI || sourceFormat === FORMATS.GEMINI_CLI) {
@@ -279,6 +206,13 @@ export async function handleForcedSSEToJson({ providerResponse, sourceFormat, ta
           choices: [{ index: 0, message, finish_reason: finishReason }],
           usage: { prompt_tokens: inTokens, completion_tokens: outTokens, total_tokens: inTokens + outTokens, ...cacheDetails }
         };
+      }
+
+      // A Claude-format client (e.g. Claude Code via /v1/messages) needs a
+      // Claude `message` body, not chat.completion — otherwise its non-streaming
+      // retry fails with "body is JSON but not a Message".
+      if (sourceFormat === FORMATS.CLAUDE) {
+        finalResp = openAICompletionToClaudeMessage(finalResp);
       }
 
       return { success: true, response: new Response(JSON.stringify(finalResp), { headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" } }) };
@@ -344,12 +278,14 @@ export async function handleForcedSSEToJson({ providerResponse, sourceFormat, ta
     // A Responses-format client (e.g. Codex) forced this provider to stream,
     // but wants JSON back. parseSSEToOpenAIResponse yields a Chat Completions
     // body; convert it to the Responses `output` shape so tool_calls are not
-    // lost on the non-streaming return path. Inlined (not imported from
-    // nonStreamingHandler.js) to avoid a circular import: nonStreamingHandler
-    // already imports parseSSEToOpenAIResponse from this module.
-    const finalBody = sourceFormat === FORMATS.OPENAI_RESPONSES
-      ? chatCompletionToResponses(parsed, customToolNames)
-      : parsed;
+    // lost on the non-streaming return path. A Claude-format client
+    // (e.g. Claude Code) instead needs a Claude `message` body.
+    let finalBody = parsed;
+    if (sourceFormat === FORMATS.OPENAI_RESPONSES) {
+      finalBody = chatCompletionToResponses(parsed, customToolNames);
+    } else if (sourceFormat === FORMATS.CLAUDE) {
+      finalBody = openAICompletionToClaudeMessage(parsed);
+    }
 
     return { success: true, response: new Response(JSON.stringify(finalBody), { headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" } }) };
   } catch (err) {
