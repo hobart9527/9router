@@ -83,6 +83,34 @@ describe("non-stream Chat upstream for a Responses-API client (op-ericding bug)"
     expect(out.object).toBe("chat.completion");
     expect(out.choices[0].message.tool_calls[0].function.name).toBe("shell");
   });
+
+  it("translates Gemini / Antigravity non-stream response into Claude Message for Claude client", () => {
+    const geminiBody = {
+      candidates: [{
+        content: {
+          parts: [
+            { text: "Here is the answer" },
+            { functionCall: { name: "Read", args: { file_path: "/test.txt" } } }
+          ]
+        },
+        finishReason: "STOP"
+      }],
+      usageMetadata: { promptTokenCount: 50, candidatesTokenCount: 20, totalTokenCount: 70 }
+    };
+
+    const out = translateNonStreamingResponse(geminiBody, FORMATS.ANTIGRAVITY, FORMATS.CLAUDE);
+    expect(out.type).toBe("message");
+    expect(out.role).toBe("assistant");
+    expect(Array.isArray(out.content)).toBe(true);
+
+    const textPart = out.content.find((c) => c.type === "text");
+    expect(textPart?.text).toBe("Here is the answer");
+
+    const toolPart = out.content.find((c) => c.type === "tool_use");
+    expect(toolPart).toBeTruthy();
+    expect(toolPart.name).toBe("Read");
+    expect(toolPart.input).toEqual({ file_path: "/test.txt" });
+  });
 });
 
 describe("forced-SSE JSON path for a Responses-API client behind a chat upstream", () => {
