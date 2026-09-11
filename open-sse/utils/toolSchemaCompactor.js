@@ -124,12 +124,13 @@ function emptyStats() {
   return { keysDropped: 0, descriptionsChanged: 0 };
 }
 
-// Convenience: format a log line from stats, mirroring formatRtkLog.
+// Convenience: format a log message from stats. Returns the bare message so the
+// logger supplies the "[TOOLSCHEMA]" tag exactly once.
 function formatToolSchemaLog(stats, bytesBefore, bytesAfter) {
   if (!stats || (stats.keysDropped === 0 && stats.descriptionsChanged === 0)) return null;
   const saved = bytesBefore - bytesAfter;
   const pct = bytesBefore > 0 ? ((saved / bytesBefore) * 100).toFixed(1) : "0";
-  return `[TOOLSCHEMA] saved ${saved}B / ${bytesBefore}B (${pct}%) keys=${stats.keysDropped} descs=${stats.descriptionsChanged}`;
+  return `saved ${saved}B / ${bytesBefore}B (${pct}%) keys=${stats.keysDropped} descs=${stats.descriptionsChanged}`;
 }
 
 export {
