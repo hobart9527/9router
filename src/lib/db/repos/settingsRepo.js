@@ -53,7 +53,12 @@ const DEFAULT_SETTINGS = {
   headroomEnabled: false,
   headroomUrl: DEFAULT_HEADROOM_URL,
   headroomCompressUserMessages: false,
-  headroomTimeoutMs: 3000,
+  // Headroom compresses locally and is CPU-bound: measured on the deploy host,
+  // a ~500KB body takes 7-10s and ~750KB takes 11-13s to return. The old 3000ms
+  // default aborted every realistic request, fail-open skipped compression, and
+  // the uncompressed body went upstream — which is how large Codex/commandcode
+  // requests hit the model context limit, 400, and locked every account (#2132).
+  headroomTimeoutMs: 15000,
   toolSchemaCompactEnabled: true,
   toolSchemaDescMaxChars: 200,
   cavemanEnabled: false,
