@@ -48,7 +48,7 @@ describe("compressWithHeadroom openai-responses format (#1998)", () => {
     expect(typeof body.input[0].content).not.toBe("string");
   });
 
-  it("skips Responses tool/reasoning history instead of collapsing it into a message (#2132)", async () => {
+  it("skips only genuinely unmappable Responses items, not tool/reasoning history (#2132)", async () => {
     global.fetch = vi.fn(async () => ({
       ok: true,
       json: async () => ({
@@ -57,30 +57,64 @@ describe("compressWithHeadroom openai-responses format (#1998)", () => {
       }),
     }));
 
+    // A hosted tool item has no OpenAI-message mapping — the translator drops
+    // it, so a round-trip through compress would lose it silently. Skip the body.
     const input = [
       {
         type: "message",
         role: "user",
-        content: [{ type: "input_text", text: "investigate bug" }],
+        content: [{ type: "input_text", text: "search the web" }],
       },
-      {
-        type: "function_call",
-        call_id: "call_apply_patch_123",
-        name: "apply_patch",
-        arguments: "*** Begin Patch\n*** End Patch",
-      },
-      {
-        type: "function_call_output",
-        call_id: "call_apply_patch_123",
-        output: "ok",
-      },
-      {
-        type: "reasoning",
-        summary: [{ type: "summary_text", text: "Need a plan" }],
-      },
+      { type: "web_search_call", id: "ws_1", status: "completed" },
     ];
+    const body = { input: structuredClone(input) };
+    const diagnostics = {};
+
+    const data = await compressWithHeadroom(body, {
+      enabled: true,
+      url: "http://headroom.test",
+      model: "gpt-5",
+      format: "openai-responses",
+      diagnostics,
+    });
+
+    expect(data).toBeNull();
+    expect(global.fetch).not.toHaveBeenCalled();
+    expect(body.input).toEqual(input);
+    expect(diagnostics.reason).toBe("skipped: openai-responses tool/reasoning input is not safe to compress");
+  });
+
+  it("compresses Responses tool/reasoning history and round-trips it losslessly (#2132)", async () => {
+    // Identity compressor: echo back exactly the messages handed to it. A
+    // lossless headroom run must then reproduce the original input verbatim.
+    global.fetch = vi.fn(async (_url, init) => {
+      const sent = JSON.parse(init.body);
+      return { ok: true, json: async () => ({ messages: sent.messages, tokens_saved: 0 }) };
+    });
+
     const body = {
-      input: structuredClone(input),
+      input: [
+        {
+          type: "message",
+          role: "user",
+          content: [{ type: "input_text", text: "investigate bug" }],
+        },
+        {
+          type: "reasoning",
+          summary: [{ type: "summary_text", text: "Need a plan" }],
+        },
+        {
+          type: "function_call",
+          call_id: "call_apply_patch_123",
+          name: "apply_patch",
+          arguments: "*** Begin Patch\n*** End Patch",
+        },
+        {
+          type: "function_call_output",
+          call_id: "call_apply_patch_123",
+          output: "ok",
+        },
+      ],
       tools: [
         {
           type: "custom",
@@ -99,9 +133,14 @@ describe("compressWithHeadroom openai-responses format (#1998)", () => {
       diagnostics,
     });
 
-    expect(data).toBeNull();
-    expect(global.fetch).not.toHaveBeenCalled();
-    expect(body.input).toEqual(input);
-    expect(diagnostics.reason).toBe("skipped: openai-responses tool/reasoning input is not safe to compress");
+    expect(data).not.toBeNull();
+    expect(global.fetch).toHaveBeenCalledOnce();
+    // body.input stays Responses-shaped — never raw OpenAI messages.
+    expect(body.input.every((item) => typeof item.type === "string")).toBe(true);
+    const fc = body.input.find((item) => item.type === "function_call");
+    expect(fc).toMatchObject({ call_id: "call_apply_patch_123", name: "apply_patch" });
+    const fco = body.input.find((item) => item.type === "function_call_output");
+    expect(fco).toMatchObject({ call_id: "call_apply_patch_123", output: "ok" });
+    expect(body.input.find((item) => item.type === "reasoning")?.summary?.[0]?.text).toBe("Need a plan");
   });
 });

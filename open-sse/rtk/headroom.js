@@ -4,6 +4,7 @@ import {
   openaiResponsesToOpenAIRequest,
   openaiToOpenAIResponsesRequest,
 } from "../translator/request/openai-responses.js";
+import { RESPONSES_ITEM } from "../translator/schema/index.js";
 
 const DEFAULT_TIMEOUT_MS = 3000;
 
@@ -89,11 +90,27 @@ function maskEndpoint(endpoint) {
   }
 }
 
+// Item types openaiResponsesToOpenAIRequest maps onto OpenAI messages and
+// openaiToOpenAIResponsesRequest can rebuild. Anything else (hosted tools such
+// as web_search_call, item_reference, …) is dropped by the translator, so a
+// compress round-trip would silently lose it — skip the whole body instead.
+const RESPONSES_COMPRESSIBLE_ITEM_TYPES = new Set([
+  RESPONSES_ITEM.MESSAGE,
+  RESPONSES_ITEM.FUNCTION_CALL,
+  RESPONSES_ITEM.CUSTOM_TOOL_CALL,
+  RESPONSES_ITEM.FUNCTION_CALL_OUTPUT,
+  RESPONSES_ITEM.CUSTOM_TOOL_CALL_OUTPUT,
+  RESPONSES_ITEM.ADDITIONAL_TOOLS,
+  RESPONSES_ITEM.REASONING,
+]);
+
 function hasUnsafeResponsesInputForCompression(body) {
   if (!Array.isArray(body?.input)) return false;
   return body.input.some((item) => {
     if (!item || typeof item !== "object" || Array.isArray(item)) return false;
-    return typeof item.type === "string" && item.type !== "message";
+    // No explicit type but a role is still read as a message (see translator line 67).
+    if (typeof item.type !== "string") return !item.role;
+    return !RESPONSES_COMPRESSIBLE_ITEM_TYPES.has(item.type);
   });
 }
 
