@@ -78,3 +78,85 @@ function stripNode(node, stats) {
 export function stripCodexUnsupportedPatterns(schema, stats = { removed: 0 }) {
   return stripNode(schema, stats);
 }
+
+// Keywords Codex refuses on a parameters ROOT, alongside a missing `type: "object"`:
+//
+//   Invalid schema for function '_create_site': schema must have type 'object'
+//   and not have 'oneOf'/'anyOf'/'allOf'/'enum'/'const'/'not' at the top level.
+//   param: tools[17].tools[2].parameters
+//
+// The constraint is on the ROOT only — nested property schemas may use composite
+// keywords freely — so this normalizes the root and leaves every descendant byte-
+// identical. Same scope guardrail as the pattern strip: Codex dispatch path only.
+const ROOT_REJECTED_KEYWORDS = ["enum", "const", "not"];
+
+function isPlainObject(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+// Prefer the branch that can actually describe the tool's argument object.
+function pickCompositeBranch(branches) {
+  const candidates = branches.filter(isPlainObject).filter((branch) => branch.type !== "null");
+  if (candidates.length === 0) return null;
+  let best = candidates[0];
+  let bestScore = -1;
+  for (const candidate of candidates) {
+    const score = candidate.type === "object" || candidate.properties
+      ? 3
+      : candidate.type === "array" || candidate.items ? 2 : 1;
+    if (score > bestScore) {
+      bestScore = score;
+      best = candidate;
+    }
+  }
+  return best;
+}
+
+/**
+ * Normalize a function tool's `parameters` root into the shape Codex accepts.
+ * Flattens root-level `oneOf`/`anyOf` (best branch) and `allOf` (merge), drops
+ * root-level `enum`/`const`/`not`, and guarantees `type: "object"`. A schema
+ * that was already acceptable is returned by identity, so callers can pass a
+ * shared schema across providers without it being rewritten for Codex.
+ */
+export function normalizeCodexToolParameters(schema) {
+  if (!isPlainObject(schema)) return { type: "object", properties: {} };
+  if (schema.type === "object" && !hasRootRejectedKeyword(schema)) return schema;
+
+  const merged = { ...schema };
+  for (const key of ["oneOf", "anyOf"]) {
+    if (!Array.isArray(merged[key])) continue;
+    const branch = pickCompositeBranch(merged[key]);
+    delete merged[key];
+    if (branch) {
+      for (const [branchKey, value] of Object.entries(branch)) {
+        if (merged[branchKey] === undefined) merged[branchKey] = value;
+      }
+    }
+  }
+  if (Array.isArray(merged.allOf)) {
+    const parts = merged.allOf.filter(isPlainObject);
+    delete merged.allOf;
+    for (const part of parts) {
+      for (const [key, value] of Object.entries(part)) {
+        if (key === "properties" && isPlainObject(value)) {
+          merged.properties = { ...(isPlainObject(merged.properties) ? merged.properties : {}), ...value };
+        } else if (key === "required" && Array.isArray(value)) {
+          merged.required = [...new Set([...(Array.isArray(merged.required) ? merged.required : []), ...value])];
+        } else if (merged[key] === undefined) {
+          merged[key] = value;
+        }
+      }
+    }
+  }
+  for (const key of ROOT_REJECTED_KEYWORDS) delete merged[key];
+  merged.type = "object";
+  return merged;
+}
+
+function hasRootRejectedKeyword(schema) {
+  for (const key of ["oneOf", "anyOf", "allOf", ...ROOT_REJECTED_KEYWORDS]) {
+    if (Array.isArray(schema[key]) ? schema[key].length > 0 : key in schema) return true;
+  }
+  return false;
+}

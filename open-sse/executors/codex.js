@@ -12,7 +12,7 @@ import { getThinkingLevels } from "../providers/thinkingLevels.js";
 import { DEFAULT_RETRY_CONFIG, HTTP_STATUS, resolveRetryEntry } from "../config/runtimeConfig.js";
 import { dbg } from "../utils/debugLog.js";
 import { resolveSessionId } from "../utils/sessionManager.js";
-import { stripCodexUnsupportedPatterns } from "../utils/codexToolSchema.js";
+import { normalizeCodexToolParameters, stripCodexUnsupportedPatterns } from "../utils/codexToolSchema.js";
 
 // SSE error patterns inside 200-OK bodies. Some retry same account first; capacity rotates accounts.
 const CODEX_SSE_RETRY_PATTERNS = ["server_is_overloaded", "service_unavailable_error"];
@@ -85,6 +85,9 @@ function normalizeCodexTools(body) {
           const n = typeof st?.name === "string" ? st.name.trim().slice(0, 128) : "";
           if (n) validNames.add(n);
           if (st?.parameters && typeof st.parameters === "object") {
+            // Root-level oneOf/anyOf/const/… must be gone before the nested
+            // pattern strip: Codex rejects the request on the root shape alone.
+            st.parameters = normalizeCodexToolParameters(st.parameters);
             st.parameters = stripCodexUnsupportedPatterns(st.parameters, patternStats);
           }
         }
@@ -108,7 +111,9 @@ function normalizeCodexTools(body) {
     tool.type = "function";
     tool.name = name.slice(0, 128);
     if (description) tool.description = description;
-    tool.parameters = stripCodexUnsupportedPatterns(parameters, patternStats);
+    // Root-shape first, then the nested pattern strip — a normalized root is a
+    // fresh object, so the pattern walk must run on the result, not the input.
+    tool.parameters = stripCodexUnsupportedPatterns(normalizeCodexToolParameters(parameters), patternStats);
     validNames.add(name);
     return true;
   });

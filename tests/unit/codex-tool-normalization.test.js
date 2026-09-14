@@ -133,8 +133,11 @@ describe("CodexExecutor tool normalization", () => {
         },
         // A property named "pattern" is data, not the schema keyword.
         pattern: { type: "string", pattern: validPattern },
+        // Nested composite, not a root-level one: Codex rejects a root
+        // allOf/oneOf outright, so the walk must be exercised where a composite
+        // keyword is actually legal (#3923).
+        variant: { oneOf: [{ type: "object", properties: { title: { type: "string", pattern: unicodePattern } } }] },
       },
-      allOf: [{ properties: { title: { type: "string", pattern: unicodePattern } } }],
     };
     const tools = normalizeTools([{
       type: "function",
@@ -145,7 +148,7 @@ describe("CodexExecutor tool normalization", () => {
     expect(tools[0].parameters.properties.artifact.properties.name.pattern).toBeUndefined();
     expect(tools[0].parameters.properties.artifact.properties.slug.pattern).toBe(validPattern);
     expect(tools[0].parameters.properties.pattern.pattern).toBe(validPattern);
-    expect(tools[0].parameters.allOf[0].properties.title.pattern).toBeUndefined();
+    expect(tools[0].parameters.properties.variant.oneOf[0].properties.title.pattern).toBeUndefined();
     // Copy-on-write: the caller's schema remains available for another provider.
     expect(sourceParameters.properties.artifact.properties.name.pattern).toBe(unicodePattern);
   });
@@ -199,5 +202,85 @@ describe("CodexExecutor tool normalization", () => {
         format: { type: "grammar", syntax: "lark", definition: "start: /.+/" },
       },
     ]);
+  });
+
+  // #3923 — Codex rejects a parameters ROOT carrying oneOf/anyOf/allOf/enum/const/not,
+  // or missing type:"object":
+  //   "schema must have type 'object' and not have 'oneOf'/'anyOf'/'allOf'/'enum'/
+  //    'const'/'not' at the top level", param tools[17].tools[2].parameters.
+  // The offending tool came in nested under a namespace tool, so both branches
+  // must normalize.
+  it("flattens a root oneOf into the object branch Codex accepts", () => {
+    const tools = normalizeTools([{
+      type: "function",
+      name: "_create_site",
+      parameters: {
+        oneOf: [
+          { type: "null" },
+          {
+            type: "object",
+            properties: { name: { type: "string" } },
+            required: ["name"],
+          },
+        ],
+      },
+    }]);
+
+    expect(tools[0].parameters.type).toBe("object");
+    expect(tools[0].parameters.oneOf).toBeUndefined();
+    expect(tools[0].parameters.properties.name).toEqual({ type: "string" });
+    expect(tools[0].parameters.required).toEqual(["name"]);
+  });
+
+  it("normalizes the root of a namespace-nested tool", () => {
+    const tools = normalizeTools([{
+      type: "namespace",
+      name: "mcp_sites",
+      tools: [{
+        type: "function",
+        name: "_create_site",
+        parameters: {
+          allOf: [
+            { type: "object", properties: { name: { type: "string" } } },
+            { properties: { slug: { type: "string" } }, required: ["slug"] },
+          ],
+        },
+      }],
+    }]);
+
+    const params = tools[0].tools[0].parameters;
+    expect(params.type).toBe("object");
+    expect(params.allOf).toBeUndefined();
+    expect(params.properties).toEqual({ name: { type: "string" }, slug: { type: "string" } });
+    expect(params.required).toEqual(["slug"]);
+  });
+
+  it("drops root enum/const/not but leaves nested composites intact", () => {
+    const nestedUnion = { type: "object", properties: { a: { type: "string" } } };
+    const tools = normalizeTools([{
+      type: "function",
+      name: "pick",
+      parameters: {
+        type: "object",
+        not: { required: ["forbidden"] },
+        properties: {
+          mode: { enum: ["fast", "slow"], default: "fast" },
+          payload: { oneOf: [nestedUnion, { type: "string" }] },
+        },
+      },
+    }]);
+
+    expect(tools[0].parameters.not).toBeUndefined();
+    // Nested property schemas keep their own composite keywords — Codex's
+    // restriction is root-only, and rewriting them would lose type information.
+    expect(tools[0].parameters.properties.mode.enum).toEqual(["fast", "slow"]);
+    expect(tools[0].parameters.properties.payload.oneOf).toHaveLength(2);
+  });
+
+  it("keeps an already-acceptable root schema by identity", () => {
+    const parameters = { type: "object", properties: { a: { type: "string" } } };
+    const tools = normalizeTools([{ type: "function", name: "noop", parameters }]);
+
+    expect(tools[0].parameters).toBe(parameters);
   });
 });
