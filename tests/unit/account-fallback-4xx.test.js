@@ -3,6 +3,11 @@
 // single connection — answered every other request in that window with a copy of
 // the first error. A 400 "maximum context length" from one session therefore
 // looked like the same failure in unrelated sessions.
+//
+// Chosen semantics: fall back (another account, or the combo's next model, may
+// accept the payload) but never lock. Observed live: one bad payload locked the
+// model and made every client request for the next 30s fail, surfacing as a false
+// 503; the combo's second model rescued 966 such requests with zero failures.
 import { describe, expect, it } from "vitest";
 import { checkFallbackError } from "../../open-sse/services/accountFallback.js";
 
@@ -15,7 +20,7 @@ describe("checkFallbackError — request-scoped vs account-scoped failures", () 
       },
     }));
 
-    expect(result).toEqual({ shouldFallback: false, cooldownMs: 0 });
+    expect(result).toEqual({ shouldFallback: true, cooldownMs: 0, noLock: true });
   });
 
   it("still falls back for account-scoped statuses", () => {

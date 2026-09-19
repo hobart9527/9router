@@ -72,6 +72,12 @@ export const ERROR_RULES = [
   { status: 402, cooldownMs: COOLDOWN.long },
   { status: 403, cooldownMs: COOLDOWN.long },
   { status: 404, cooldownMs: COOLDOWN.long },
+  // Request-level rejection: the payload is wrong, so the account is healthy.
+  // Fallback stays enabled (the next account, or the combo's next model, may
+  // accept what this one rejected) but the account is never locked: a lock would
+  // fail unrelated requests for the whole cooldown window with an error only the
+  // offending payload earned, and would surface to clients as a false 503.
+  { status: 400, noLock: true },
   { status: 429, backoff: true },
 ];
 

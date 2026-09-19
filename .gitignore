@@ -91,6 +91,13 @@ graphify-out/*
 .kiro/
 9router-*
 
+# Deployment host artifacts (live DB, backups, macOS AppleDouble junk)
+data.sqlite
+backups/
+docker-compose.deploy.yml.bak-*
+._*
+._*/
+
 # Local sensitive / temp files
 .engine-token.txt
 .tmp-prov.json
