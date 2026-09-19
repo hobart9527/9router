@@ -1,0 +1,65 @@
+services:
+  9router:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: 9router-fork:master-0.5.81-nolock-20260919
+    container_name: 9router
+    restart: unless-stopped
+    ports:
+      - "20128:20128"
+    volumes:
+      - /opt/9router/data:/app/data
+    env_file:
+      - .env
+    environment:
+      DATA_DIR: /app/data
+      PORT: "20128"
+      HOSTNAME: "0.0.0.0"
+      NODE_ENV: production
+      HEADROOM_URL: http://headroom:8787
+    depends_on:
+      headroom:
+        condition: service_healthy
+
+  headroom:
+    image: 9router-headroom:0.36.2-code
+    container_name: headroom
+    restart: unless-stopped
+    mem_limit: 1536m
+    mem_reservation: 512m
+    expose:
+      - "8787"
+    volumes:
+      - /opt/9router/data/headroom:/root/.headroom
+      - /opt/9router/data/headroom-cache:/root/.cache
+      - /opt/9router/data/headroom-patch/content_router.py:/usr/local/lib/python3.13/site-packages/headroom/transforms/content_router.py:ro
+    environment:
+      HEADROOM_HOST: "0.0.0.0"
+      HEADROOM_PORT: "8787"
+      HEADROOM_MODE: "cache"
+      HEADROOM_SAVINGS_PROFILE: "coding"
+      HEADROOM_COMPRESS_USER_MESSAGES: "1"
+      HEADROOM_PROTECT_READS: "1"
+      HEADROOM_CODE_AWARE_ENABLED: "1"
+      HEADROOM_COMPRESS_ALLOW_REMOTE: "1"
+      HEADROOM_COMPRESSION_MAX_WORKERS: "2"
+      HEADROOM_ANTHROPIC_PRE_UPSTREAM_CONCURRENCY: "4"
+      HEADROOM_ANTHROPIC_PRE_UPSTREAM_ACQUIRE_TIMEOUT_SECONDS: "10"
+      HEADROOM_ANTHROPIC_PRE_UPSTREAM_MEMORY_CONTEXT_TIMEOUT_SECONDS: "2"
+      HEADROOM_MIN_TOKENS: "100"
+      HEADROOM_LIMIT_CONCURRENCY: "32"
+      HEADROOM_MAX_CONNECTIONS: "64"
+      HEADROOM_MAX_KEEPALIVE: "16"
+      HEADROOM_KEEPALIVE_EXPIRY: "60"
+    healthcheck:
+      test:
+        - CMD
+        - curl
+        - --fail
+        - --silent
+        - http://127.0.0.1:8787/readyz
+      interval: 10s
+      timeout: 3s
+      retries: 12
+      start_period: 20s
