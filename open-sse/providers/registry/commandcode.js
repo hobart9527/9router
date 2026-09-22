@@ -23,7 +23,7 @@ export default {
     format: "commandcode",
     forceStream: true,
     headers: {
-      "x-command-code-version": "0.25.7",
+      "x-command-code-version": "1.62.1",
       "x-cli-environment": "cli",
     },
   },

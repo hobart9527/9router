@@ -106,6 +106,10 @@ function safeParseJson(s) {
 function convertMessages(messages = []) {
   const out = [];
   const systemTexts = [];
+  // CommandCode's own client resolves each tool-result's toolName from the assistant
+  // tool-call that produced it (falling back to "unknown"). Sending an empty name made
+  // the model see anonymous tool results, so track the id → name map while converting.
+  const toolNamesById = new Map();
 
   for (const m of messages) {
     if (!m) continue;
@@ -124,7 +128,7 @@ function convertMessages(messages = []) {
         content: [{
           type: "tool-result",
           toolCallId: m.tool_call_id || "",
-          toolName: m.name || "",
+          toolName: m.name || toolNamesById.get(m.tool_call_id) || "unknown",
           output: { type: "text", value },
         }],
       });
@@ -134,14 +138,16 @@ function convertMessages(messages = []) {
     if (role === ROLE.ASSISTANT) {
       const blocks = [];
       const rc = m.reasoning_content || m.thought || m.reasoning;
-      if (rc || (Array.isArray(m.tool_calls) && m.tool_calls.length > 0)) {
-        blocks.push({ type: "reasoning", text: rc || " " });
-      }
+      // Only forward reasoning that actually exists. Injecting a placeholder part for
+      // every tool-calling turn (the previous behaviour) put blank reasoning blocks in
+      // the history that the model never produced.
+      if (rc) blocks.push({ type: "reasoning", text: rc });
       const text = flattenText(m.content);
       if (text) blocks.push({ type: OPENAI_BLOCK.TEXT, text });
       if (Array.isArray(m.tool_calls)) {
         for (const tc of m.tool_calls) {
           const fn = tc.function || {};
+          if (tc.id) toolNamesById.set(tc.id, fn.name || "unknown");
           blocks.push({
             type: "tool-call",
             toolCallId: tc.id || "",
@@ -189,20 +195,29 @@ export function openaiToCommandCodeRequest(model, body, stream /* , credentials 
     messages,
     stream: stream !== false,
     max_tokens: body.max_tokens ?? body.max_output_tokens ?? DEFAULT_MAX_TOKENS,
-    temperature: body.temperature ?? 0.3,
   };
 
   if (system) params.system = system;
 
   const tools = convertTools(body.tools);
   if (tools) params.tools = tools;
+  // Temperature is pass-through only, matching every other request translator and the
+  // official CLI (which sends it solely when the caller set one). The previous hardcoded
+  // 0.3 had no basis: it overrode the upstream default for clients that omit temperature
+  // and formed an out-of-spec pair with the reasoning_effort we send when thinking is on.
+  if (body.temperature !== undefined) params.temperature = body.temperature;
   if (body.top_p != null) params.top_p = body.top_p;
 
   const today = new Date().toISOString().slice(0, 10);
 
   return {
     threadId: randomUUID(),
-    memory: "",
+    // Envelope fields the official CLI always sends: `memory`/`taste`/`skills` as null
+    // and an explicit permission mode ("standard" is the CLI's default mapping).
+    memory: null,
+    taste: null,
+    skills: null,
+    permissionMode: "standard",
     config: {
       workingDir: process.cwd(),
       date: today,

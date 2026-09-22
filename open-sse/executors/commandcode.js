@@ -4,11 +4,22 @@ import { PROVIDERS } from "../config/providers.js";
 import { commandCodeToOpenAIResponse } from "../translator/response/commandcode-to-openai.js";
 import { SSE_DONE } from "../utils/sseConstants.js";
 
+// CommandCode's `x-project-slug` is the current project directory name (the official CLI
+// uses getCurrentProjectDirName()). Derive it from the outgoing request's workingDir so the
+// value is stable and meaningful instead of being invented per call.
+function projectSlugFromBody(body) {
+  const workingDir = body?.config?.workingDir;
+  if (typeof workingDir !== "string") return "unknown";
+  const parts = workingDir.split(/[\\/]+/).filter(Boolean);
+  return parts.length > 0 ? parts[parts.length - 1] : "unknown";
+}
+
 /**
  * CommandCodeExecutor — talks to https://api.commandcode.ai/alpha/generate
  *
  * Auth: Bearer <user_xxx> API key (stored as the connection's apiKey).
- * Adds the per-request `x-session-id` header expected by CommandCode upstream.
+ * Sends the identity headers the official CLI sends (`x-session-id`, `User-Agent: cli`,
+ * `x-project-slug`, `x-taste-learning`, plus the version headers from the provider config).
  *
  * Upstream returns AI SDK v5 NDJSON (one JSON event per line, no `data:` prefix).
  * We translate each event to an OpenAI chat.completion.chunk and emit it as SSE so
@@ -25,11 +36,18 @@ export class CommandCodeExecutor extends BaseExecutor {
     return body;
   }
 
-  buildHeaders(credentials, stream = true) {
+  buildHeaders(credentials, stream = true, _url = null, _model = null, body = null) {
     const headers = {
       "Content-Type": "application/json",
       ...(this.config.headers || {}),
       "x-session-id": randomUUID(),
+      // Identity headers the official CLI always sends. CommandCode gates behaviour on
+      // the client identity (an unknown version is answered with 403 upgrade_required),
+      // so emulate a current client instead of the hand-rolled pair used before.
+      // x-taste-learning defaults to true in the CLI config.
+      "User-Agent": "cli",
+      "x-project-slug": projectSlugFromBody(body),
+      "x-taste-learning": "true",
     };
 
     const token = credentials?.apiKey || credentials?.accessToken;
