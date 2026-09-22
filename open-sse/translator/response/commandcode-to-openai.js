@@ -36,6 +36,13 @@ function ensureState(state, model) {
     state.openText = false;
     state.finishReason = null;
     state.usage = null;
+    // Argument bytes emitted per tool id. The consolidated `tool-call` event is the
+    // authoritative full input, so we must know whether it is a duplicate of what we
+    // already streamed or the only copy we will ever get.
+    state.toolArgBytes = new Map();
+    // Argument text whose tool id never saw a tool-input-start. Kept so the consolidated
+    // tool-call can fall back to it when it carries no `input` of its own.
+    state.pendingArgText = new Map();
   }
 }
 
@@ -104,6 +111,7 @@ export function commandCodeToOpenAIResponse(chunk, state) {
         state.toolIndexById.set(id, idx);
       }
       state.openTools.add(id);
+      if (!state.toolArgBytes.has(id)) state.toolArgBytes.set(id, 0);
       const delta = {
         ...(state.chunkIndex === 0 ? { role: ROLE.ASSISTANT } : {}),
         tool_calls: [{
@@ -119,24 +127,46 @@ export function commandCodeToOpenAIResponse(chunk, state) {
     }
     case "tool-input-delta": {
       const id = event.id || event.toolCallId;
+      const text = event.delta || event.inputTextDelta || "";
       const idx = state.toolIndexById.get(id);
-      if (idx == null) break;
+      if (idx == null) {
+        // The matching tool-input-start is missing, so the tool name is still unknown.
+        // Emitting a nameless tool block here would be rejected downstream; hold the text
+        // and let the consolidated tool-call below emit name + full input together.
+        state.pendingArgText.set(id, (state.pendingArgText.get(id) || "") + text);
+        break;
+      }
+      state.toolArgBytes.set(id, (state.toolArgBytes.get(id) || 0) + text.length);
       const delta = {
         tool_calls: [{
           index: idx,
-          function: { arguments: event.delta || event.inputTextDelta || "" },
+          function: { arguments: text },
         }],
       };
       out.push(makeChunk(state, delta));
       break;
     }
     case "tool-call": {
-      // Final consolidated tool call — only emit if we never saw tool-input-* deltas.
+      // Consolidated tool call. `event.input` is the authoritative full argument object:
+      // emit it whenever no argument bytes were streamed for this id, otherwise the call
+      // reaches the client with empty arguments (Claude Code then rejects it with
+      // "required parameter is missing") instead of failing here.
       const id = event.toolCallId;
-      if (state.toolIndexById.has(id)) break;
-      const idx = state.toolIndex++;
-      state.toolIndexById.set(id, idx);
-      const argsStr = typeof event.input === "string" ? event.input : JSON.stringify(event.input ?? {});
+      const streamed = state.toolArgBytes.get(id) || 0;
+      if (state.toolIndexById.has(id) && streamed > 0) break;
+      let idx = state.toolIndexById.get(id);
+      if (idx == null) {
+        idx = state.toolIndex++;
+        state.toolIndexById.set(id, idx);
+      }
+      const pending = state.pendingArgText.get(id) || "";
+      const argsStr = typeof event.input === "string"
+        ? event.input
+        : event.input != null
+          ? JSON.stringify(event.input)
+          : (pending || "{}");
+      state.pendingArgText.delete(id);
+      state.toolArgBytes.set(id, (state.toolArgBytes.get(id) || 0) + argsStr.length);
       const delta = {
         ...(state.chunkIndex === 0 ? { role: ROLE.ASSISTANT } : {}),
         tool_calls: [{
@@ -149,6 +179,35 @@ export function commandCodeToOpenAIResponse(chunk, state) {
       state.chunkIndex++;
       out.push(makeChunk(state, delta));
       break;
+    }
+    case "tool-input-error": {
+      // AI SDK emits this when the model produced tool arguments that failed schema
+      // validation / could not be repaired. It used to fall through to `default` and be
+      // dropped, which left the already-opened tool block with no arguments at all —
+      // the client then saw a tool call with `{}` and rejected it on required params.
+      const id = event.toolCallId || event.id || fallbackToolCallId(state.toolIndex);
+      const streamed = state.toolArgBytes.get(id) || 0;
+      const hasInput = event.input !== undefined && event.input !== null;
+      if (hasInput && streamed === 0) {
+        const idx = state.toolIndexById.get(id) ?? (() => {
+          const next = state.toolIndex++;
+          state.toolIndexById.set(id, next);
+          return next;
+        })();
+        const argsStr = typeof event.input === "string" ? event.input : JSON.stringify(event.input);
+        state.toolArgBytes.set(id, argsStr.length);
+        out.push(makeChunk(state, {
+          tool_calls: [{
+            index: idx,
+            id,
+            type: OPENAI_BLOCK.FUNCTION,
+            function: { name: event.toolName || "", arguments: argsStr },
+          }],
+        }));
+        break;
+      }
+      const reason = event.errorText || event.error?.message || "tool input could not be parsed";
+      throw new Error(`[CommandCode error: ${reason}]`);
     }
     case "finish-step": {
       state.finishReason = mapFinishReason(event.finishReason);

@@ -201,6 +201,7 @@ export async function inspectAndWrapCommandCodeResponse(originalResponse, model)
           event?.type === "reasoning-delta" ||
           event?.type === "tool-input-start" ||
           event?.type === "tool-call" ||
+          event?.type === "tool-input-error" ||
           event?.type === "finish" ||
           event?.type === "finish-step"
         ) {
