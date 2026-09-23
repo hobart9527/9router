@@ -155,6 +155,19 @@ export function parseCommandCodeError(event) {
   return { statusCode, message, type };
 }
 
+// The first-token error check stops peeking at the first event that proves the upstream
+// stream is healthy, so this list must stay a superset of every event that can legitimately
+// precede an error in the upstream protocol.
+const PEEK_STOP_EVENTS = new Set([
+  "text-delta",
+  "reasoning-delta",
+  "tool-input-start",
+  "tool-call",
+  "tool-input-error",
+  "finish",
+  "finish-step",
+]);
+
 export async function inspectAndWrapCommandCodeResponse(originalResponse, model) {
   const reader = originalResponse.body.getReader();
   const decoder = new TextDecoder();
@@ -188,8 +201,8 @@ export async function inspectAndWrapCommandCodeResponse(originalResponse, model)
       buffer = lines.pop() || "";
 
       let stopLoop = false;
-      for (const line of lines) {
-        const trimmed = line.trim();
+      for (let i = 0; i < lines.length; i++) {
+        const trimmed = lines[i].trim();
         if (!trimmed) continue;
         const jsonStr = trimmed.startsWith("data:") ? trimmed.slice(5).trim() : trimmed;
         if (!jsonStr || jsonStr === "[DONE]") {
@@ -214,15 +227,16 @@ export async function inspectAndWrapCommandCodeResponse(originalResponse, model)
 
         bufferedLines.push(trimmed);
 
-        if (
-          event?.type === "text-delta" ||
-          event?.type === "reasoning-delta" ||
-          event?.type === "tool-input-start" ||
-          event?.type === "tool-call" ||
-          event?.type === "tool-input-error" ||
-          event?.type === "finish" ||
-          event?.type === "finish-step"
-        ) {
+        if (PEEK_STOP_EVENTS.has(event?.type)) {
+          // The rest of this read is already off the wire and belongs to the downstream
+          // stream; the peek only decides when to stop looking for a first-token error and
+          // must never discard events. Dropping the tail used to cut a tool-input-start off
+          // from its tool-input-delta, so the client received a tool call with arguments {}
+          // and rejected it ("required parameter ... is missing").
+          for (let j = i + 1; j < lines.length; j++) {
+            const rest = lines[j].trim();
+            if (rest) bufferedLines.push(rest);
+          }
           stopLoop = true;
           break;
         }
