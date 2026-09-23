@@ -56,6 +56,52 @@ function convertSystemToDeveloperRole(body) {
   }
 }
 
+// The Responses contract only accepts a reasoning item that carries `encrypted_content`
+// together with a non-empty summary: strict Codex backends answer the whole request with
+// 400 "Missing required parameter: 'input[N].summary'" when the blob has no summary text.
+// Tool-calling turns, Chat-format clients that stash the continuity blob without reasoning
+// text, and the responses->chat->responses round trip Headroom runs all produce that shape,
+// so repair it here instead of handing the backend an item it refuses.
+export function normalizeReasoningInputItems(body) {
+  if (!Array.isArray(body?.input)) return 0;
+  let repaired = 0;
+  const kept = [];
+  for (const item of body.input) {
+    if (!item || typeof item !== "object" || Array.isArray(item) || item.type !== "reasoning") {
+      kept.push(item);
+      continue;
+    }
+    // Only a blob triggers the backend check: without one the item is accepted as-is.
+    if (typeof item.encrypted_content !== "string" || !item.encrypted_content) {
+      kept.push(item);
+      continue;
+    }
+    const summaryText = Array.isArray(item.summary)
+      ? item.summary.map((part) => part?.text || "").filter(Boolean).join("")
+      : "";
+    if (summaryText.trim()) {
+      kept.push(item);
+      continue;
+    }
+    const contentText = Array.isArray(item.content)
+      ? item.content.map((part) => part?.text || "").filter(Boolean).join("")
+      : "";
+    if (contentText.trim()) {
+      // Real reasoning text is available, so keep the blob and give the backend a summary.
+      item.summary = [{ type: "summary_text", text: contentText }];
+      kept.push(item);
+      repaired++;
+      continue;
+    }
+    // An encrypted blob is only accepted together with summary text, and there is no text to
+    // summarise. Send nothing rather than inventing summary text or handing over an item the
+    // backend refuses (a bare reasoning item is refused as well).
+    repaired++;
+  }
+  if (repaired > 0) body.input = kept;
+  return repaired;
+}
+
 // Strip server-generated item IDs (rs_/fc_/resp_/msg_) from input — avoids 404 with store=false
 function stripStoredItemReferences(body) {
   if (!Array.isArray(body.input)) return;
@@ -423,6 +469,9 @@ export class CodexExecutor extends BaseExecutor {
     convertSystemToDeveloperRole(body);
     // Strip server-generated item IDs (rs_/fc_/resp_/msg_) — Codex /responses can't resolve when store=false
     stripStoredItemReferences(body);
+  // Reasoning items that carry an encrypted blob need a summary for the Codex backend
+  const repairedReasoning = normalizeReasoningInputItems(body);
+  if (repairedReasoning > 0) dbg("CODEX", `repaired ${repairedReasoning} reasoning item(s) missing summary`);
     // Flatten function tools + drop unsupported types
     normalizeCodexTools(body);
 
