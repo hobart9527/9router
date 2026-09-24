@@ -446,7 +446,13 @@ export function normalizeGeminiContents(contents) {
   if (out.length > 0 && out[0].role !== "user") {
     out.unshift({ role: "user", parts: [{ text: "..." }] });
   }
+  // Gemini also rejects a final model turn ("Requests ending with a model turn are
+  // not supported"). Patch plain model turns only — a trailing functionCall must
+  // keep its functionResponse pairing intact.
+  const lastContent = out.at(-1);
+  if (lastContent && lastContent.role !== "user" && !lastContent.parts.some(p => p?.functionCall)) {
+    out.push({ role: "user", parts: [{ text: "..." }] });
+  }
   return out;
 }
-
 

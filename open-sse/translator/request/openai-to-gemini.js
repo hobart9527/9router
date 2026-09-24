@@ -59,29 +59,33 @@ function openaiToGeminiBase(model, body, stream, signature = DEFAULT_THINKING_AG
     result.generationConfig.maxOutputTokens = body.max_tokens;
   }
 
-  // Build tool_call_id -> name map
-  const tcID2Name = {};
+  // Build tool responses cache as a positional queue. A client may reuse one
+  // tool_call_id for several calls; keying by id alone would let a later call's
+  // response overwrite an earlier one, so the emitted functionResponse carries the
+  // wrong name/content and Gemini answers 400 INVALID_ARGUMENT
+  // ("Request contains an invalid argument."). Each call consumes its own response.
+  const toolResponses = new Map();
   if (body.messages && Array.isArray(body.messages)) {
-    for (const msg of body.messages) {
-      if (msg.role === ROLE.ASSISTANT && msg.tool_calls) {
-        for (const tc of msg.tool_calls) {
-          if (tc.type === OPENAI_BLOCK.FUNCTION && tc.id && tc.function?.name) {
-            tcID2Name[tc.id] = tc.function.name;
-          }
-        }
+    body.messages.forEach((msg, idx) => {
+      if (msg.role === ROLE.TOOL && msg.tool_call_id) {
+        const queue = toolResponses.get(msg.tool_call_id) || [];
+        queue.push({ idx, content: msg.content });
+        toolResponses.set(msg.tool_call_id, queue);
       }
-    }
+    });
   }
 
-  // Build tool responses cache
-  const toolResponses = {};
-  if (body.messages && Array.isArray(body.messages)) {
-    for (const msg of body.messages) {
-      if (msg.role === ROLE.TOOL && msg.tool_call_id) {
-        toolResponses[msg.tool_call_id] = msg.content;
-      }
-    }
-  }
+  // True when `id` still has an unconsumed response after `afterIndex`.
+  const peekToolResponse = (id, afterIndex) =>
+    (toolResponses.get(id) || []).some(entry => entry.idx > afterIndex);
+
+  // Consume and return the first response for `id` that follows `afterIndex`.
+  const takeToolResponse = (id, afterIndex) => {
+    const queue = toolResponses.get(id) || [];
+    const pos = queue.findIndex(entry => entry.idx > afterIndex);
+    if (pos === -1) return undefined;
+    return queue.splice(pos, 1)[0].content;
+  };
 
   // Convert messages
   if (body.messages && Array.isArray(body.messages)) {
@@ -123,7 +127,9 @@ function openaiToGeminiBase(model, body, stream, signature = DEFAULT_THINKING_AG
         }
 
         if (msg.tool_calls && Array.isArray(msg.tool_calls)) {
-          const toolCallIds = [];
+          // Keep each call's own name: it is the only correct source for the
+          // matching functionResponse when ids are reused.
+          const toolCalls = [];
           let firstFunctionCallSeen = false;
           for (const tc of msg.tool_calls) {
             if (tc.type !== OPENAI_BLOCK.FUNCTION) continue;
@@ -145,7 +151,7 @@ function openaiToGeminiBase(model, body, stream, signature = DEFAULT_THINKING_AG
               part.thoughtSignature = callSig;
             }
             parts.push(part);
-            toolCallIds.push(tc.id);
+            toolCalls.push({ id: tc.id, name: tc.function?.name });
           }
 
           if (parts.length > 0) {
@@ -154,21 +160,21 @@ function openaiToGeminiBase(model, body, stream, signature = DEFAULT_THINKING_AG
 
           // Check if there are actual tool responses in the next messages
           const isIntermediate = i < body.messages.length - 1;
-          const hasActualResponses = toolCallIds.some(fid => toolResponses[fid] !== undefined);
+          const hasActualResponses = toolCalls.some(tc => peekToolResponse(tc.id, i));
 
           if (hasActualResponses || isIntermediate) {
             const toolParts = [];
-            for (const fid of toolCallIds) {
-              let resp = toolResponses[fid];
+            for (const tc of toolCalls) {
+              let resp = takeToolResponse(tc.id, i);
               if (resp === undefined) resp = "";
 
-              let name = tcID2Name[fid];
+              let name = tc.name;
               if (!name) {
-                const idParts = fid.split("-");
+                const idParts = tc.id.split("-");
                 if (idParts.length > 2) {
                   name = idParts.slice(0, -2).join("-");
                 } else {
-                  name = fid;
+                  name = tc.id;
                 }
               }
 
@@ -181,7 +187,7 @@ function openaiToGeminiBase(model, body, stream, signature = DEFAULT_THINKING_AG
 
               toolParts.push({
                 functionResponse: {
-                  id: fid,
+                  id: tc.id,
                   name: sanitizeGeminiFunctionName(name),
                   response: { result: parsedResp }
                 }
@@ -316,14 +322,18 @@ function wrapInCloudCodeEnvelopeForClaude(model, claudeRequest, credentials = nu
     }
   };
 
-  // Build tool_use id -> name map so functionResponse can use the correct name
-  const toolUseIdToName = {};
+  // Build tool_use id -> names queue (occurrence order) so a functionResponse uses the
+  // name of its own tool_use even when a client reuses one id for several calls —
+  // a mismatched name is rejected by Gemini with 400 INVALID_ARGUMENT.
+  const toolUseNamesById = new Map();
   if (claudeRequest.messages && Array.isArray(claudeRequest.messages)) {
     for (const msg of claudeRequest.messages) {
       if (Array.isArray(msg.content)) {
         for (const block of msg.content) {
           if (block.type === CLAUDE_BLOCK.TOOL_USE && block.id && block.name) {
-            toolUseIdToName[block.id] = block.name;
+            const queue = toolUseNamesById.get(block.id) || [];
+            queue.push(block.name);
+            toolUseNamesById.set(block.id, queue);
           }
         }
       }
@@ -361,9 +371,11 @@ function wrapInCloudCodeEnvelopeForClaude(model, claudeRequest, credentials = nu
             if (Array.isArray(content)) {
               content = content.map(c => c.type === CLAUDE_BLOCK.TEXT ? c.text : JSON.stringify(c)).join("\n");
             }
-            // Resolve the original tool name from the id — Gemini requires it to match the functionCall name
-            const resolvedName = toolUseIdToName[block.tool_use_id]
-              ? sanitizeGeminiFunctionName(toolUseIdToName[block.tool_use_id])
+            // Resolve the tool name of THIS tool_use — Gemini requires the name to
+            // match the functionCall with the same id.
+            const nameQueue = toolUseNamesById.get(block.tool_use_id);
+            const resolvedName = nameQueue?.length
+              ? sanitizeGeminiFunctionName(nameQueue.shift())
               : "tool";
             parts.push({
               functionResponse: {
