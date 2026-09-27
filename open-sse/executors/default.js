@@ -7,6 +7,7 @@ import { buildClineHeaders } from "../shared/clineAuth.js";
 import { proxyAwareFetch } from "../utils/proxyFetch.js";
 import { injectReasoningContent } from "../utils/reasoningContentInjector.js";
 import { stripUnsupportedParams } from "../translator/concerns/paramSupport.js";
+import { resolveSessionId } from "../utils/sessionManager.js";
 
 // Auth header descriptors — derived from registry transport.auth, fallback to hardcoded defaults.
 const BEARER = { combined: true, header: "Authorization", scheme: "bearer" };
@@ -167,6 +168,21 @@ export class DefaultExecutor extends BaseExecutor {
     if (model && (this.provider === "claude"
       || (this.provider?.startsWith?.("anthropic-compatible-") && isClaudeModel))) {
       headers["Anthropic-Beta"] = selectAnthropicBeta(model, body);
+    }
+
+    if (this.provider === "claude" || (this.provider?.startsWith?.("anthropic-compatible-") && isClaudeModel)) {
+      delete headers["Anthropic-Dangerous-Direct-Browser-Access"];
+      delete headers["anthropic-dangerous-direct-browser-access"];
+
+      const sid = credentials?.rawHeaders?.["x-claude-code-session-id"]
+        || credentials?.rawHeaders?.["X-Claude-Code-Session-Id"]
+        || resolveSessionId({ headers: credentials?.rawHeaders, body, connectionId: credentials?.connectionId, scope: "claude" });
+      if (sid && !headers["x-claude-code-session-id"]) {
+        headers["x-claude-code-session-id"] = sid;
+      }
+      if (credentials?.rawHeaders?.["x-anthropic-billing-header"] && !headers["x-anthropic-billing-header"]) {
+        headers["x-anthropic-billing-header"] = credentials.rawHeaders["x-anthropic-billing-header"];
+      }
     }
 
     // Strip first-party Claude Code identity headers for non-Anthropic anthropic-compatible upstreams
@@ -331,6 +347,52 @@ export class DefaultExecutor extends BaseExecutor {
   async refreshKilocode(refreshToken, proxyOptions = null) {
     // Kilocode uses device code flow, no refresh token support
     return null;
+  }
+
+  async execute(options) {
+    if (this.provider === "claude" && options?.credentials) {
+      return await withClaudeConcurrencyLimit(options.credentials, () => super.execute(options));
+    }
+    return super.execute(options);
+  }
+}
+
+const claudeSemaphores = new Map();
+const CLAUDE_MAX_CONCURRENCY = 2;
+
+async function withClaudeConcurrencyLimit(credentials, fn) {
+  const key = credentials?.id || credentials?.connectionId || credentials?.apiKey || "default";
+  let sem = claudeSemaphores.get(key);
+  if (!sem) {
+    sem = { running: 0, queue: [] };
+    claudeSemaphores.set(key, sem);
+  }
+
+  if (sem.running >= CLAUDE_MAX_CONCURRENCY) {
+    await new Promise((resolve, reject) => {
+      let timer = null;
+      const waiter = () => {
+        if (timer) clearTimeout(timer);
+        resolve();
+      };
+      timer = setTimeout(() => {
+        const idx = sem.queue.indexOf(waiter);
+        if (idx !== -1) sem.queue.splice(idx, 1);
+        reject(new Error("Concurrency limit timeout waiting for Claude upstream slot"));
+      }, 45000);
+      sem.queue.push(waiter);
+    });
+  }
+
+  sem.running++;
+  try {
+    return await fn();
+  } finally {
+    sem.running--;
+    if (sem.queue.length > 0) {
+      const next = sem.queue.shift();
+      next();
+    }
   }
 }
 
