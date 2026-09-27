@@ -3,9 +3,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { Card, Button, Input, Modal, Toggle, ConfirmModal } from "@/shared/components";
 import { useCopyToClipboard } from "@/shared/hooks/useCopyToClipboard";
-import { getCurrentLocale, onLocaleChange } from "@/i18n/runtime";
 import {
-  WENYAN_LOCALES,
   CAVEMAN_LEVELS,
   PONYTAIL_LEVELS,
 } from "../endpoint/endpointConstants";
@@ -58,27 +56,13 @@ export default function TokenSaverClient() {
   const [showPxpipeModal, setShowPxpipeModal] = useState(false);
   const [pxpipeActionLoading, setPxpipeActionLoading] = useState(false);
   const [pxpipeActionError, setPxpipeActionError] = useState("");
-  const [locale, setLocale] = useState("en");
-
   const { copied, copy } = useCopyToClipboard();
 
-  useEffect(() => {
-    setLocale(getCurrentLocale());
-    return onLocaleChange(() => setLocale(getCurrentLocale()));
-  }, []);
-
-  const isWenyanLocale = WENYAN_LOCALES.includes(locale);
-  const visibleCavemanLevels = isWenyanLocale
-    ? CAVEMAN_LEVELS
-    : CAVEMAN_LEVELS.filter((lvl) => !lvl.wenyan);
-
-  useEffect(() => {
-    const current = CAVEMAN_LEVELS.find((lvl) => lvl.id === cavemanLevel);
-    if (current?.wenyan && !isWenyanLocale) {
-      setCavemanLevel("ultra");
-      patchSetting({ cavemanLevel: "ultra" });
-    }
-  }, [isWenyanLocale, cavemanLevel]);
+  // Caveman level is a persisted, locale-independent setting. It used to be
+  // gated on the UI locale: the wenyan options were hidden outside zh-CN/zh-TW
+  // and a saved wenyan choice was silently rewritten to "ultra" on page load,
+  // which both clobbered the user's setting and left it unselectable.
+  const visibleCavemanLevels = CAVEMAN_LEVELS;
 
   const patchSetting = async (patch) => {
     try {
