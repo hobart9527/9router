@@ -183,6 +183,10 @@ export class DefaultExecutor extends BaseExecutor {
       if (credentials?.rawHeaders?.["x-anthropic-billing-header"] && !headers["x-anthropic-billing-header"]) {
         headers["x-anthropic-billing-header"] = credentials.rawHeaders["x-anthropic-billing-header"];
       }
+      const rawUa = credentials?.rawHeaders?.["user-agent"] || credentials?.rawHeaders?.["User-Agent"];
+      if (rawUa && rawUa.includes("claude-cli/")) {
+        headers["User-Agent"] = rawUa;
+      }
     }
 
     // Strip first-party Claude Code identity headers for non-Anthropic anthropic-compatible upstreams
