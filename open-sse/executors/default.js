@@ -185,6 +185,22 @@ export class DefaultExecutor extends BaseExecutor {
       }
     }
 
+    // Claude / Claude-model anthropic-compatible: forward the client's billing and
+    // UA identity so the upstream sees the real CLI, and drop the browser-access
+    // opt-in header.
+    if (this.provider === "claude" || (this.provider?.startsWith?.("anthropic-compatible-") && isClaudeModel)) {
+      delete headers["Anthropic-Dangerous-Direct-Browser-Access"];
+      delete headers["anthropic-dangerous-direct-browser-access"];
+
+      if (credentials?.rawHeaders?.["x-anthropic-billing-header"] && !headers["x-anthropic-billing-header"]) {
+        headers["x-anthropic-billing-header"] = credentials.rawHeaders["x-anthropic-billing-header"];
+      }
+      const rawUa = credentials?.rawHeaders?.["user-agent"] || credentials?.rawHeaders?.["User-Agent"];
+      if (rawUa && rawUa.includes("claude-cli/")) {
+        headers["User-Agent"] = rawUa;
+      }
+    }
+
     // Strip first-party Claude Code identity headers for non-Anthropic anthropic-compatible upstreams
     if (this.provider?.startsWith?.("anthropic-compatible-")) {
       const baseUrl = credentials?.providerSpecificData?.baseUrl || "";
@@ -347,6 +363,52 @@ export class DefaultExecutor extends BaseExecutor {
   async refreshKilocode(refreshToken, proxyOptions = null) {
     // Kilocode uses device code flow, no refresh token support
     return null;
+  }
+
+  async execute(options) {
+    if (this.provider === "claude" && options?.credentials) {
+      return await withClaudeConcurrencyLimit(options.credentials, () => super.execute(options));
+    }
+    return super.execute(options);
+  }
+}
+
+const claudeSemaphores = new Map();
+const CLAUDE_MAX_CONCURRENCY = 2;
+
+async function withClaudeConcurrencyLimit(credentials, fn) {
+  const key = credentials?.id || credentials?.connectionId || credentials?.apiKey || "default";
+  let sem = claudeSemaphores.get(key);
+  if (!sem) {
+    sem = { running: 0, queue: [] };
+    claudeSemaphores.set(key, sem);
+  }
+
+  if (sem.running >= CLAUDE_MAX_CONCURRENCY) {
+    await new Promise((resolve, reject) => {
+      let timer = null;
+      const waiter = () => {
+        if (timer) clearTimeout(timer);
+        resolve();
+      };
+      timer = setTimeout(() => {
+        const idx = sem.queue.indexOf(waiter);
+        if (idx !== -1) sem.queue.splice(idx, 1);
+        reject(new Error("Concurrency limit timeout waiting for Claude upstream slot"));
+      }, 45000);
+      sem.queue.push(waiter);
+    });
+  }
+
+  sem.running++;
+  try {
+    return await fn();
+  } finally {
+    sem.running--;
+    if (sem.queue.length > 0) {
+      const next = sem.queue.shift();
+      next();
+    }
   }
 }
 

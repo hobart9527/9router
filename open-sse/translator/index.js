@@ -154,7 +154,7 @@ export function translateRequest(sourceFormat, targetFormat, model, body, stream
 
   // Claude cloaking: rename client tools with CLAUDE_TOOL_SUFFIX (anti-ban)
   // quirk: only providers flagged cloakToolsOnOAuth, and only with an OAuth token
-  if (PROVIDERS[provider]?.quirks?.cloakToolsOnOAuth) {
+  if (PROVIDERS[provider]?.quirks?.cloakToolsOnOAuth && clientTool !== "claude") {
     const apiKey = credentials?.accessToken || credentials?.apiKey || null;
     if (apiKey?.includes("sk-ant-oat")) {
       const { body: cloakedBody, toolNameMap } = cloakClaudeTools(result);
