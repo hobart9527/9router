@@ -20,12 +20,13 @@ export function getQuotaCooldown(backoffLevel = 0) {
  * @param {number} backoffLevel - Current backoff level for exponential backoff
  * @returns {{ shouldFallback: boolean, cooldownMs: number, newBackoffLevel?: number }}
  */
-export function checkFallbackError(status, errorText, backoffLevel = 0) {
+export function checkFallbackError(status, errorText, backoffLevel = 0, provider = null) {
   const lowerError = errorText
     ? (typeof errorText === "string" ? errorText : JSON.stringify(errorText)).toLowerCase()
     : "";
 
   for (const rule of ERROR_RULES) {
+    if (rule.provider && rule.provider !== provider) continue;
     // Text-based rule: match substring in error message
     if (rule.text && lowerError && lowerError.includes(rule.text)) {
       if (rule.backoff) {
@@ -49,6 +50,14 @@ export function checkFallbackError(status, errorText, backoffLevel = 0) {
       }
       return { shouldFallback: true, cooldownMs: rule.cooldownMs };
     }
+  }
+
+  // Request-scoped client errors that matched no rule above (413/422/409/...): the payload
+  // is wrong, not the credential, so hand the upstream error back for this request instead
+  // of cooling a healthy account down. 400 is handled by the `noLock` rule (it still falls
+  // back to the next account/model, it just never locks); 401/402/403/429 keep their rules.
+  if (status >= 400 && status < 500 && status !== 401 && status !== 402 && status !== 403 && status !== 429) {
+    return { shouldFallback: false, cooldownMs: 0 };
   }
 
   // Default: transient cooldown for any unmatched error

@@ -3,7 +3,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    image: 9router-fork:master-0.5.81-nolock-20260919
+    image: 9router-fork:sync-0.5.95-20261004
     container_name: 9router
     restart: unless-stopped
     ports:

@@ -172,7 +172,7 @@ export async function inspectAndWrapCommandCodeResponse(originalResponse, model)
   const reader = originalResponse.body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
-  const bufferedLines = [];
+  const rawChunks = [];
   let detectedError = null;
 
   try {
@@ -186,16 +186,15 @@ export async function inspectAndWrapCommandCodeResponse(originalResponse, model)
             const parsed = JSON.parse(jsonStr);
             if (parsed?.type === "error") {
               detectedError = parsed;
-            } else {
-              bufferedLines.push(trimmed);
             }
           } catch {
-            bufferedLines.push(trimmed);
+            /* ignore */
           }
         }
         break;
       }
 
+      rawChunks.push(value);
       buffer += decoder.decode(value, { stream: true });
       const lines = buffer.split("\n");
       buffer = lines.pop() || "";
@@ -206,7 +205,6 @@ export async function inspectAndWrapCommandCodeResponse(originalResponse, model)
         if (!trimmed) continue;
         const jsonStr = trimmed.startsWith("data:") ? trimmed.slice(5).trim() : trimmed;
         if (!jsonStr || jsonStr === "[DONE]") {
-          bufferedLines.push(trimmed);
           stopLoop = true;
           break;
         }
@@ -215,7 +213,6 @@ export async function inspectAndWrapCommandCodeResponse(originalResponse, model)
         try {
           event = JSON.parse(jsonStr);
         } catch {
-          bufferedLines.push(trimmed);
           continue;
         }
 
@@ -225,18 +222,9 @@ export async function inspectAndWrapCommandCodeResponse(originalResponse, model)
           break;
         }
 
-        bufferedLines.push(trimmed);
-
+        // Replay is byte-exact (rawChunks), so the peek only decides when to stop looking
+        // for a first-token error; nothing it reads is ever dropped from the downstream stream.
         if (PEEK_STOP_EVENTS.has(event?.type)) {
-          // The rest of this read is already off the wire and belongs to the downstream
-          // stream; the peek only decides when to stop looking for a first-token error and
-          // must never discard events. Dropping the tail used to cut a tool-input-start off
-          // from its tool-input-delta, so the client received a tool call with arguments {}
-          // and rejected it ("required parameter ... is missing").
-          for (let j = i + 1; j < lines.length; j++) {
-            const rest = lines[j].trim();
-            if (rest) bufferedLines.push(rest);
-          }
           stopLoop = true;
           break;
         }
@@ -271,29 +259,18 @@ export async function inspectAndWrapCommandCodeResponse(originalResponse, model)
     );
   }
 
-  const combinedStream = createReplayedStream(bufferedLines, buffer, reader);
+  const combinedStream = createRawReplayedStream(rawChunks, reader);
   return wrapNdjsonAsOpenAISse(combinedStream, model, originalResponse);
 }
 
-function createReplayedStream(bufferedLines, remainingBuffer, reader) {
-  const encoder = new TextEncoder();
-  let replayed = false;
+function createRawReplayedStream(rawChunks, reader) {
+  let chunkIndex = 0;
 
   return new ReadableStream({
     async pull(controller) {
-      if (!replayed) {
-        replayed = true;
-        let prefix = bufferedLines.join("\n");
-        if (prefix && remainingBuffer) {
-          prefix += "\n" + remainingBuffer;
-        } else if (remainingBuffer) {
-          prefix = remainingBuffer;
-        } else if (prefix) {
-          prefix += "\n";
-        }
-        if (prefix) {
-          controller.enqueue(encoder.encode(prefix));
-        }
+      if (chunkIndex < rawChunks.length) {
+        controller.enqueue(rawChunks[chunkIndex++]);
+        return;
       }
 
       try {

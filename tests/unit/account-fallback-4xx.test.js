@@ -23,6 +23,12 @@ describe("checkFallbackError — request-scoped vs account-scoped failures", () 
     expect(result).toEqual({ shouldFallback: true, cooldownMs: 0, noLock: true });
   });
 
+  it("hands back unmatched request-scoped 4xx (413/422/409) without fallback or lock", () => {
+    for (const status of [409, 413, 422]) {
+      expect(checkFallbackError(status, "payload rejected")).toEqual({ shouldFallback: false, cooldownMs: 0 });
+    }
+  });
+
   it("still falls back for account-scoped statuses", () => {
     for (const status of [401, 402, 403, 404, 429]) {
       expect(checkFallbackError(status, "nope").shouldFallback).toBe(true);
