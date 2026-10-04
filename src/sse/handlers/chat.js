@@ -228,6 +228,10 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
 
   // Try with available accounts (fallback on errors)
   const excludeConnectionIds = new Set();
+  // A 400 is request-scoped (noLock): replaying the same bad payload on every account looks like abuse
+  // to the provider, so cap how many accounts we try after 400s.
+  const MAX_BAD_REQUEST_FALLBACKS = 2;
+  let badRequestFallbacks = 0;
   let lastError = null;
   let lastStatus = null;
   let lastHeaders = null;
@@ -331,6 +335,11 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
     const shouldFallback = provider === "antigravity" && quotaResetMs
       ? true
       : (await markAccountUnavailable(credentials.connectionId, result.status, result.error, provider, model, resetsAtMs)).shouldFallback;
+
+    if (shouldFallback && result.status === 400 && ++badRequestFallbacks > MAX_BAD_REQUEST_FALLBACKS) {
+      log.warn("FALLBACK", `[${provider}/${model}] 400 on ${MAX_BAD_REQUEST_FALLBACKS + 1} accounts, stop rotating`);
+      return result.response;
+    }
 
     if (shouldFallback) {
       log.warn("FALLBACK", `⇄ ACC:${credentials.connectionName} UNAVAILABLE (${result.status}) → NEXT ACCOUNT`);
