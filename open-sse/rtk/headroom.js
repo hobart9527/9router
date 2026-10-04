@@ -262,7 +262,7 @@ async function callCompress(url, messages, model, timeoutMs, compressUserMessage
 // Compress request body via Headroom proxy. Fail-open: returns null on any error.
 // /v1/compress only understands OpenAI shape, so Claude bodies are translated
 // to OpenAI, compressed, then translated back using 9Router's own translators.
-export async function compressWithHeadroom(body, { enabled, url, model, format, compressUserMessages, timeoutMs = DEFAULT_TIMEOUT_MS, diagnostics = null } = {}) {
+export async function compressWithHeadroom(body, { enabled, url, model, format, compressUserMessages, timeoutMs = DEFAULT_TIMEOUT_MS, minBodyBytes = 0, diagnostics = null } = {}) {
   timeoutMs = normalizeTimeout(timeoutMs);
   if (!enabled) {
     setDiagnostic(diagnostics, "disabled");
@@ -278,7 +278,13 @@ export async function compressWithHeadroom(body, { enabled, url, model, format, 
   }
 
   try {
-    if (diagnostics) diagnostics.before = captureSizeSnapshot(body);
+    const before = captureSizeSnapshot(body);
+    if (diagnostics) diagnostics.before = before;
+    // Small bodies gain little and cost a round-trip; skip to keep latency and prompt-cache prefixes intact.
+    if (minBodyBytes > 0 && before.bodyBytes < minBodyBytes) {
+      setDiagnostic(diagnostics, `skipped: body ${before.bodyBytes}B below ${minBodyBytes}B threshold`);
+      return null;
+    }
 
     // Claude shape: translate → OpenAI → compress → translate back.
     if (format === "claude") {

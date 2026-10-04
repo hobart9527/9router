@@ -203,6 +203,34 @@ describe("compressWithHeadroom", () => {
     expect(global.fetch).not.toHaveBeenCalled();
   });
 
+  it("skips bodies below minBodyBytes without calling the proxy", async () => {
+    global.fetch = vi.fn();
+    const body = { messages: [{ role: "user", content: "short" }] };
+    const diagnostics = {};
+
+    const stats = await compressWithHeadroom(body, {
+      enabled: true, url: "http://localhost:8787", format: "openai", minBodyBytes: 51200, diagnostics,
+    });
+
+    expect(stats).toBeNull();
+    expect(global.fetch).not.toHaveBeenCalled();
+    expect(diagnostics.reason).toMatch(/below 51200B threshold/);
+  });
+
+  it("compresses bodies at or above minBodyBytes", async () => {
+    global.fetch = vi.fn(async () => new Response(JSON.stringify({
+      messages: [{ role: "user", content: "x" }], tokens_before: 100, tokens_after: 1, tokens_saved: 99,
+    }), { status: 200 }));
+    const body = { messages: [{ role: "user", content: "y".repeat(200) }] };
+
+    const stats = await compressWithHeadroom(body, {
+      enabled: true, url: "http://localhost:8787", format: "openai", minBodyBytes: 100,
+    });
+
+    expect(stats).not.toBeNull();
+    expect(global.fetch).toHaveBeenCalledTimes(1);
+  });
+
   describe("timeout normalization", () => {
     const mockResponse = JSON.stringify({
       messages: [{ role: "user", content: "short" }],

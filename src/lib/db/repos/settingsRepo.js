@@ -59,6 +59,8 @@ const DEFAULT_SETTINGS = {
   // the uncompressed body went upstream — which is how large Codex/commandcode
   // requests hit the model context limit, 400, and locked every account (#2132).
   headroomTimeoutMs: 15000,
+  // Bodies below this size skip Headroom (round-trip + cache-prefix churn outweigh the savings).
+  headroomMinBodyBytes: 51200,
   toolSchemaCompactEnabled: true,
   toolSchemaDescMaxChars: 200,
   cavemanEnabled: false,
