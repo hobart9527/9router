@@ -3,6 +3,7 @@ import { restoreToolNames } from "../../utils/opencodeFingerprint.js";
 import { createErrorResult } from "../../utils/error.js";
 import { HTTP_STATUS } from "../../config/runtimeConfig.js";
 import { FORMATS } from "../../translator/formats.js";
+import { openAICompletionToClaudeMessage } from "../../translator/concerns/claudeMessage.js";
 import { PROVIDERS } from "../../config/providers.js";
 import { buildRequestDetail, extractRequestConfig, saveUsageStats, formatDoneLine } from "./requestDetail.js";
 import { ROLE, RESPONSES_ITEM } from "../../translator/schema/index.js";
@@ -287,14 +288,13 @@ export async function handleForcedSSEToJson({ providerResponse, sourceFormat, ta
     // A Responses-format client (e.g. Codex) forced this provider to stream,
     // but wants JSON back. parseSSEToOpenAIResponse yields a Chat Completions
     // body; convert it to the Responses `output` shape so tool_calls are not
-    // lost on the non-streaming return path. A Claude-format client
-    // (e.g. Claude Code) instead needs a Claude `message` body.
-    let finalBody = parsed;
-    if (sourceFormat === FORMATS.OPENAI_RESPONSES) {
-      finalBody = chatCompletionToResponses(parsed, customToolNames);
-    } else if (sourceFormat === FORMATS.CLAUDE) {
-      finalBody = openAICompletionToClaudeMessage(parsed);
-    }
+    // lost on the non-streaming return path. A Claude-format client (e.g. Claude Code)
+    // instead needs a Claude `message` body. Inlined to avoid circular import.
+    const finalBody = sourceFormat === FORMATS.OPENAI_RESPONSES
+      ? chatCompletionToResponses(parsed, customToolNames)
+      : sourceFormat === FORMATS.CLAUDE
+        ? openAICompletionToClaudeMessage(parsed)
+        : parsed;
 
     return { success: true, response: new Response(JSON.stringify(restoreToolNames(finalBody, toolNameMap)), { headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" } }) };
   } catch (err) {
