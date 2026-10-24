@@ -130,3 +130,14 @@ Headroom 外部压缩代理针对大上下文非常有效，但对只有两三�
 | **2026-09-19** | v0.5.81 | `6bb7a35` | 基础合并，确立 Headroom 与 Token-saver 核心补丁 |
 | **2026-10-04** | v0.5.95 | `1b82698` | 引入生产优化：Claude 客户端 UA 动态转发、Gemini 修复、Headroom <50KB 跳过 |
 | **2026-10-16** | **v0.5.104** | `d4144da` | **主要升级**：<br>1. 合并 67 个上游提交，引入 Gemini 4 Argon、Claude 5.5 (Sonnet/Opus)、AWS Bedrock、MiniMax Code；<br>2. 采纳上游更完备的 `createToolCallIdUniquifier`（Gemini 全局 tool_call_id 去重与配对）；<br>3. 融合 Codex `strict` 参数与根层级工具规范化；<br>4. 统一 `openAICompletionToClaudeMessage` 非流式转换通道；<br>5. 完整保留本 Fork 的 Token-saver、Headroom 门限跳过与防锁号机制。 |
+
+---
+
+## 同步记录：upstream v0.5.109（2026-10-24）
+
+合并 `decolua/9router` v0.5.109，冲突处理遵循"保留 fork 优化"：
+
+- `open-sse/services/accountFallback.js`：400 仍为 `noLock`（回退下一账号、不锁账号），并附带上游的 `requestScoped: true`，使 combo 能越过该成员并返回首个被拒绝的响应；409/413/422 采用上游 `requestScoped` 语义。
+- `open-sse/handlers/chatCore.js`：`handleChatCore` 入参同时保留 `headroomMinBodyBytes` 与上游 `customPromptEnabled`/`customPrompt`。
+- `open-sse/rtk/headroom.js`：保留 Responses 历史压缩放宽，新增 `hasNonPlainTextToolOutput`，结构化 JSON / 非文本工具输出不送往代理。
+- `tests/translator/__snapshots__/golden-url-header.test.js.snap`：按 fork 行为重生成（Claude 头部不再带 `Anthropic-Dangerous-Direct-Browser-Access`）。

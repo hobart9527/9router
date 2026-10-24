@@ -81,7 +81,8 @@ describe("compressWithHeadroom openai-responses format (#1998)", () => {
     expect(data).toBeNull();
     expect(global.fetch).not.toHaveBeenCalled();
     expect(body.input).toEqual(input);
-    expect(diagnostics.reason).toBe("skipped: openai-responses tool/reasoning input is not safe to compress");
+    // Hosted-tool items route through the tool-output projection first (upstream), which finds nothing plain-text.
+    expect(diagnostics.reason).toBe("no eligible plain-text tool output");
   });
 
   it("compresses Responses tool/reasoning history and round-trips it losslessly (#2132)", async () => {

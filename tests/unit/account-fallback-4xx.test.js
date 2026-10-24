@@ -20,12 +20,12 @@ describe("checkFallbackError — request-scoped vs account-scoped failures", () 
       },
     }));
 
-    expect(result).toEqual({ shouldFallback: true, cooldownMs: 0, noLock: true });
+    expect(result).toEqual({ shouldFallback: true, cooldownMs: 0, noLock: true, requestScoped: true });
   });
 
   it("hands back unmatched request-scoped 4xx (413/422/409) without fallback or lock", () => {
     for (const status of [409, 413, 422]) {
-      expect(checkFallbackError(status, "payload rejected")).toEqual({ shouldFallback: false, cooldownMs: 0 });
+      expect(checkFallbackError(status, "payload rejected")).toEqual({ shouldFallback: false, cooldownMs: 0, requestScoped: true });
     }
   });
 
@@ -38,6 +38,27 @@ describe("checkFallbackError — request-scoped vs account-scoped failures", () 
   it("still honours rate-limit / quota wording on any 4xx", () => {
     expect(checkFallbackError(400, "rate limit reached").shouldFallback).toBe(true);
     expect(checkFallbackError(422, "quota exceeded").shouldFallback).toBe(true);
+  });
+
+  it.each([
+    "You have insufficient credits to make this request. Please purchase more credits to continue using the service.",
+    "INSUFFICIENT CREDITS",
+    "Insufficient credit balance",
+    "Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.",
+    "CREDIT BALANCE IS TOO LOW",
+  ])("falls back with backoff for a 400 credit error: %s", (message) => {
+    expect(checkFallbackError(400, message)).toEqual({
+      shouldFallback: true, cooldownMs: 2000, newBackoffLevel: 1,
+    });
+    expect(checkFallbackError(400, message, 1)).toEqual({
+      shouldFallback: true, cooldownMs: 4000, newBackoffLevel: 2,
+    });
+  });
+
+  it("falls back without locking for an ordinary bad request (fork noLock)", () => {
+    expect(checkFallbackError(400, "Bad request")).toEqual({
+      shouldFallback: true, cooldownMs: 0, noLock: true, requestScoped: true,
+    });
   });
 
   it("keeps the transient cooldown for unmatched server errors", () => {
