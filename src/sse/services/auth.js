@@ -9,6 +9,58 @@ import * as log from "../utils/logger.js";
 // Mutex to prevent race conditions during account selection
 let selectionMutex = Promise.resolve();
 
+
+/**
+ * Calculate dynamic penalty for an account based on error history and backoff.
+ * Higher penalty = worse rank (sinks to the back).
+ */
+export function getConnectionPenalty(c) {
+  let penalty = 0;
+  const backoff = c.backoffLevel || 0;
+  penalty += backoff * 1000;
+
+  if (c.lastErrorAt) {
+    const elapsed = Date.now() - new Date(c.lastErrorAt).getTime();
+    const ERROR_WINDOW_MS = 5 * 60 * 1000;
+    if (elapsed > 0 && elapsed < ERROR_WINDOW_MS) {
+      penalty += Math.round(500 * (1 - elapsed / ERROR_WINDOW_MS));
+    }
+  }
+
+  if (c.testStatus === "unavailable") {
+    penalty += 300;
+  }
+  return penalty;
+}
+
+// Background health decay: decay backoffLevel for quiet connections every 60s
+const gAuth = (global.__authService ??= { decayInterval: null });
+if (!gAuth.decayInterval) {
+  gAuth.decayInterval = setInterval(async () => {
+    try {
+      const connections = await getProviderConnections({ isActive: true });
+      const now = Date.now();
+      for (const conn of connections) {
+        if ((conn.backoffLevel || 0) > 0 || conn.testStatus === "unavailable") {
+          const elapsed = conn.lastErrorAt ? now - new Date(conn.lastErrorAt).getTime() : Infinity;
+          if (elapsed > 90 * 1000) {
+            const nextLevel = Math.max(0, (conn.backoffLevel || 0) - 1);
+            const patch = { backoffLevel: nextLevel };
+            if (nextLevel === 0 && conn.testStatus === "unavailable") {
+              patch.testStatus = "active";
+              patch.lastError = null;
+              patch.errorCode = null;
+            }
+            await updateProviderConnection(conn.id, patch);
+          }
+        }
+      }
+    } catch {
+      // quiet decay
+    }
+  }, 60 * 1000);
+  if (gAuth.decayInterval.unref) gAuth.decayInterval.unref();
+}
 const GITHUB_MONTHLY_USAGE_LIMIT = "you've reached your additional usage limit for your plan";
 
 function githubMonthlyResetMs(status, errorText, provider) {
@@ -158,8 +210,12 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
     } else if (strategy === "round-robin") {
       const stickyLimit = providerOverride.stickyRoundRobinLimit || settings.stickyRoundRobinLimit || 3;
 
+      // Group by lowest penalty tier so degraded accounts are rotated out
+      const minPenalty = Math.min(...availableConnections.map(c => getConnectionPenalty(c)));
+      const candidates = availableConnections.filter(c => getConnectionPenalty(c) <= minPenalty + 200);
+
       // Sort by lastUsed (most recent first) to find current candidate
-      const byRecency = [...availableConnections].sort((a, b) => {
+      const byRecency = [...candidates].sort((a, b) => {
         if (!a.lastUsedAt && !b.lastUsedAt) return (a.priority || 999) - (b.priority || 999);
         if (!a.lastUsedAt) return 1;
         if (!b.lastUsedAt) return -1;
@@ -172,14 +228,13 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
       if (current && current.lastUsedAt && currentCount < stickyLimit) {
         // Stay with current account
         connection = current;
-        // Update lastUsedAt and increment count (await to ensure persistence)
         await updateProviderConnection(connection.id, {
           lastUsedAt: new Date().toISOString(),
           consecutiveUseCount: (connection.consecutiveUseCount || 0) + 1
         });
       } else {
-        // Pick the least recently used (excluding current if possible)
-        const sortedByOldest = [...availableConnections].sort((a, b) => {
+        // Pick the least recently used candidate
+        const sortedByOldest = [...candidates].sort((a, b) => {
           if (!a.lastUsedAt && !b.lastUsedAt) return (a.priority || 999) - (b.priority || 999);
           if (!a.lastUsedAt) return -1;
           if (!b.lastUsedAt) return 1;
@@ -188,15 +243,19 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
 
         connection = sortedByOldest[0];
 
-        // Update lastUsedAt and reset count to 1 (await to ensure persistence)
         await updateProviderConnection(connection.id, {
           lastUsedAt: new Date().toISOString(),
           consecutiveUseCount: 1
         });
       }
     } else {
-      // Default: fill-first (already sorted by priority in getProviderConnections)
-      connection = availableConnections[0];
+      // Default: fill-first (sort by effective priority: base priority + error penalty)
+      const sortedByEffective = [...availableConnections].sort((a, b) => {
+        const pDiff = ((a.priority || 1) + getConnectionPenalty(a)) - ((b.priority || 1) + getConnectionPenalty(b));
+        if (pDiff !== 0) return pDiff;
+        return (a.priority || 999) - (b.priority || 999);
+      });
+      connection = sortedByEffective[0];
     }
 
     const resolvedProxy = await resolveConnectionProxyConfig(connection.providerSpecificData || {});
