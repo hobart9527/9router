@@ -163,7 +163,13 @@ function removeUnsupportedKeywords(obj, keywords) {
 
     const value = obj[key];
     if (value && typeof value === "object") {
-      removeUnsupportedKeywords(value, keywords);
+      if (key === "properties" && !Array.isArray(value)) {
+        for (const sub of Object.values(value)) {
+          removeUnsupportedKeywords(sub, keywords);
+        }
+      } else {
+        removeUnsupportedKeywords(value, keywords);
+      }
     }
   }
 }

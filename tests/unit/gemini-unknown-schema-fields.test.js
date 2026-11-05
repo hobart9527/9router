@@ -102,4 +102,67 @@ describe("cleanJSONSchemaForAntigravity strips errorMessage recursively (#4283)"
     expect(result.description).toBe("A valid tool");
     expect(result.properties.n.description).toBe("A number");
   });
+
+  it("preserves property names matching unsupported keyword constraints (title, format, default)", () => {
+    const schema = {
+      type: "object",
+      title: "RootSchemaTitle",
+      properties: {
+        title: {
+          type: "string",
+          title: "ParameterMetadataTitle",
+          minLength: 1,
+          maxLength: 60,
+          description: "agent title"
+        },
+        format: {
+          type: "string",
+          description: "output format",
+          default: "json"
+        },
+        provider: { type: "string" }
+      },
+      required: ["title", "format", "provider"]
+    };
+    const result = cleanJSONSchemaForAntigravity(structuredClone(schema));
+    // Root schema metadata title should be stripped
+    expect(result).not.toHaveProperty("title");
+    // Parameter properties should be preserved
+    expect(result.properties).toHaveProperty("title");
+    expect(result.properties).toHaveProperty("format");
+    expect(result.properties).toHaveProperty("provider");
+    expect(result.properties.title.type).toBe("string");
+    expect(result.properties.title.description).toBe("agent title");
+    // Metadata/constraints inside parameter schema should be stripped
+    expect(result.properties.title).not.toHaveProperty("title");
+    expect(result.properties.title).not.toHaveProperty("minLength");
+    expect(result.properties.title).not.toHaveProperty("maxLength");
+    expect(result.properties.format).not.toHaveProperty("default");
+    // Required array should retain valid property names
+    expect(result.required).toEqual(["title", "format", "provider"]);
+  });
+
+  it("preserves nested properties named title inside sub-objects", () => {
+    const schema = {
+      type: "object",
+      properties: {
+        settings: {
+          type: "object",
+          title: "SettingsSchemaTitle",
+          properties: {
+            title: {
+              type: "string",
+              description: "nested title"
+            }
+          },
+          required: ["title"]
+        }
+      }
+    };
+    const result = cleanJSONSchemaForAntigravity(structuredClone(schema));
+    expect(result.properties.settings).not.toHaveProperty("title");
+    expect(result.properties.settings.properties).toHaveProperty("title");
+    expect(result.properties.settings.properties.title.description).toBe("nested title");
+    expect(result.properties.settings.required).toEqual(["title"]);
+  });
 });
