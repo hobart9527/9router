@@ -89,6 +89,15 @@ function walk(value, maxChars, stats) {
 
   const out = {};
   for (const [key, child] of Object.entries(value)) {
+    if (key === "properties" && child && typeof child === "object" && !Array.isArray(child)) {
+      out[key] = Object.fromEntries(
+        Object.entries(child).map(([propertyName, propertySchema]) => [
+          propertyName,
+          walk(propertySchema, maxChars, stats),
+        ]),
+      );
+      continue;
+    }
     if (SCHEMA_ANNOTATION_KEYS.has(key)) {
       stats.keysDropped += 1;
       continue;

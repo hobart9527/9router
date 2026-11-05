@@ -15,6 +15,41 @@
 
 import { describe, it, expect } from "vitest";
 import { cleanJSONSchemaForAntigravity, UNSUPPORTED_SCHEMA_CONSTRAINTS } from "../../open-sse/translator/formats/gemini.js";
+import { compactToolSchema } from "../../open-sse/utils/toolSchemaCompactor.js";
+
+describe("compactToolSchema preserves title property names", () => {
+  it("keeps required title property while stripping schema annotations", () => {
+    const tool = {
+      name: "create_agent",
+      input_schema: {
+        title: "Create agent input",
+        type: "object",
+        properties: {
+          title: {
+            type: "string",
+            title: "Agent title",
+            markdownDescription: "Agent title field",
+            deprecated: true,
+          },
+          provider: { type: "string" },
+          initialPrompt: { type: "string" },
+        },
+        required: ["title", "provider", "initialPrompt"],
+      },
+    };
+
+    const { tools } = compactToolSchema([tool]);
+    const schema = tools[0].input_schema;
+
+    expect(schema.properties.title).toMatchObject({ type: "string" });
+    expect(schema.required).toEqual(["title", "provider", "initialPrompt"]);
+    expect(schema).not.toHaveProperty("title");
+    expect(schema.properties.title).not.toHaveProperty("title");
+    expect(schema.properties.title).not.toHaveProperty("markdownDescription");
+    expect(schema.properties.title).not.toHaveProperty("deprecated");
+  });
+});
+
 
 describe("UNSUPPORTED_SCHEMA_CONSTRAINTS includes non-standard annotation keywords (#4283)", () => {
   it("includes errorMessage", () => {
