@@ -9,6 +9,21 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { CLAUDE_CLI_VERSION, CLAUDE_CLI_SPOOF_HEADERS } from "open-sse/providers/shared.js";
+import claudeProvider from "open-sse/providers/registry/claude.js";
+
+describe("Claude Code CLI fingerprint version", () => {
+  it("keeps shared and official Claude transport User-Agent fingerprints aligned", () => {
+    const expectedUserAgent = "claude-cli/2.1.322 (external, sdk-cli)";
+
+    expect(CLAUDE_CLI_VERSION).toBe("2.1.322");
+    expect(claudeProvider.transport.headers["User-Agent"]).toBe(expectedUserAgent);
+    expect(claudeProvider.transport.headers["Anthropic-Beta"]).toBe(
+      CLAUDE_CLI_SPOOF_HEADERS["Anthropic-Beta"]
+    );
+  });
+});
+
 
 // ─── DefaultExecutor.buildHeaders() ──────────────────────────────────────────
 
@@ -29,7 +44,7 @@ describe("DefaultExecutor.buildHeaders() — claude provider", () => {
       headers["Anthropic-Version"] === "2023-06-01" ||
       headers["anthropic-version"] === "2023-06-01";
     expect(hasVersion).toBe(true);
-    expect(headers["User-Agent"]).toBe("claude-cli/2.1.280 (external, sdk-cli)");
+    expect(headers["User-Agent"]).toBe("claude-cli/2.1.322 (external, sdk-cli)");
   });
 
   it("includes heavy-agent beta flags for claude-opus-5", () => {
