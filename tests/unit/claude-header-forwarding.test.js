@@ -17,6 +17,7 @@ describe("Claude Code CLI fingerprint version", () => {
     const expectedUserAgent = "claude-cli/2.1.322 (external, sdk-cli)";
 
     expect(CLAUDE_CLI_VERSION).toBe("2.1.322");
+    expect(CLAUDE_CLI_SPOOF_HEADERS["User-Agent"]).toBe(expectedUserAgent);
     expect(claudeProvider.transport.headers["User-Agent"]).toBe(expectedUserAgent);
     expect(claudeProvider.transport.headers["Anthropic-Beta"]).toBe(
       CLAUDE_CLI_SPOOF_HEADERS["Anthropic-Beta"]
