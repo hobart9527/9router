@@ -138,6 +138,18 @@ describe("resolveSessionId", () => {
     expect(got).toBe("user-123");
   });
 
+  it("does not treat request-scoped x-client-request-id as a session for opencode-go (cache affinity)", () => {
+    const get = (id) => resolveSessionId({
+      headers: { "x-client-request-id": id },
+      body: bodyWithUserOnly,
+      connectionId: "conn1",
+      scope: "opencode-go",
+    });
+    const first = get("req-1");
+    expect(first).not.toBe("req-1");
+    expect(get("req-2")).toBe(first);
+  });
+
   it("keeps x-client-request-id as a session override outside Kiro scope", () => {
     const got = resolveSessionId({
       headers: { "x-client-request-id": "req-1" },

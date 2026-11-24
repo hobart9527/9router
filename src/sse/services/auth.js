@@ -139,8 +139,18 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
     const availableConnections = connections.filter(c => {
       if (excludeSet.has(c.id)) return false;
       if (isModelLockActive(c, model)) return false;
-      const enabled = c.providerSpecificData?.enabledModels;
-      if (providerId === "codex" && Array.isArray(enabled) && enabled.length && requestedModel && !enabled.includes(requestedModel)) return false;
+      const normalizeModel = (value) => typeof value === "string" ? value.trim().toLowerCase() : "";
+      const targetModel = normalizeModel(model || requestedModel);
+      const enabled = c.providerSpecificData?.enabledModels || c.enabledModels;
+      if (Array.isArray(enabled) && enabled.length && targetModel) {
+        const isAllowed = enabled.some(m => normalizeModel(m) === targetModel);
+        if (!isAllowed) return false;
+      }
+      const disabled = c.providerSpecificData?.disabledModels || c.disabledModels;
+      if (Array.isArray(disabled) && disabled.length && targetModel) {
+        const isDisallowed = disabled.some(m => normalizeModel(m) === targetModel);
+        if (isDisallowed) return false;
+      }
       // Antigravity: skip if live quota exhausted for this model
       if (isAntigravity && model && antigravityQuotaCache) {
         const connQuotas = antigravityQuotaCache.get(c.id);

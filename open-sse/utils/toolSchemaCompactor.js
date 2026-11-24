@@ -10,9 +10,8 @@
  *     dropping the rest.
  *
  * Both tool wire shapes are handled: Claude (`input_schema`) and OpenAI
- * (`function.parameters`). The walker is shape-agnostic — it recurses into
- * every object/array and strips the known annotation keys wherever they
- * appear, so nested `properties`/`items`/`$defs` are covered too.
+ * (`function.parameters`). The walker visits schema-bearing keywords,
+ * preserving business field names and literal JSON values.
  *
  * Fail-open by contract (mirrors rtk/ and toolDeduper): any error returns the
  * original tools untouched, never throws.
@@ -79,29 +78,48 @@ function compactDescription(desc, maxChars) {
   return truncateToFirstSentence(collapsed, maxChars);
 }
 
-// Walk any JSON value, returning a new value with annotation keys dropped and
-// description strings compacted. `stats` accumulates what changed.
-function walk(value, maxChars, stats) {
+// Only schema-bearing keywords recurse. Name maps and literal JSON values are
+// not schema nodes: stripping their keys would change valid tool inputs.
+const SCHEMA_MAP_KEYS = new Set(["properties", "patternProperties", "$defs", "definitions", "dependentSchemas"]);
+const SCHEMA_KEYS = new Set([
+  "items", "prefixItems", "additionalItems", "contains", "additionalProperties",
+  "unevaluatedProperties", "unevaluatedItems", "propertyNames", "allOf", "anyOf",
+  "oneOf", "not", "if", "then", "else", "contentSchema",
+]);
+
+function walk(value, maxChars, stats, context = "tool") {
   if (Array.isArray(value)) {
-    return value.map((item) => walk(item, maxChars, stats));
+    return value.map((item) => walk(item, maxChars, stats, context));
   }
   if (!value || typeof value !== "object") return value;
 
-  const out = {};
-  for (const [key, child] of Object.entries(value)) {
-    if (SCHEMA_ANNOTATION_KEYS.has(key)) {
+  return Object.fromEntries(Object.entries(value).flatMap(([key, child]) => {
+    if (context === "schema" && SCHEMA_ANNOTATION_KEYS.has(key)) {
       stats.keysDropped += 1;
-      continue;
+      return [];
     }
     if (key === "description" && typeof child === "string") {
       const compacted = compactDescription(child, maxChars);
       if (compacted !== child) stats.descriptionsChanged += 1;
-      out[key] = compacted;
-      continue;
+      return [[key, compacted]];
     }
-    out[key] = walk(child, maxChars, stats);
-  }
-  return out;
+    if (context === "schema" && (SCHEMA_MAP_KEYS.has(key) || key === "dependencies")) {
+      const mapped = child && typeof child === "object" && !Array.isArray(child)
+        ? Object.fromEntries(Object.entries(child).map(([name, schema]) => [
+          name, Array.isArray(schema) ? schema : walk(schema, maxChars, stats, "schema"),
+        ]))
+        : child;
+      return [[key, mapped]];
+    }
+    if ((context === "schema" && SCHEMA_KEYS.has(key)) ||
+        (context === "tool" && (key === "parameters" || key === "input_schema"))) {
+      return [[key, walk(child, maxChars, stats, "schema")]];
+    }
+    if (context === "tool" && key === "function") {
+      return [[key, walk(child, maxChars, stats, "tool")]];
+    }
+    return [[key, child]];
+  }));
 }
 
 /**

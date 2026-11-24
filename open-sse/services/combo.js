@@ -478,27 +478,31 @@ export async function handleComboChat({
       // Success (2xx). A 2xx is necessary but NOT sufficient: Gemini aborts (e.g.
       // MALFORMED_FUNCTION_CALL) still return 200 and stream empty content, which would
       // otherwise be delivered as a successful empty answer with no failover.
-      // Peek the stream for real content before committing to this candidate.
+      // Peek the stream for real content before committing to this candidate, EXCEPT on
+      // the last candidate (or 1-model combo) where there is no fallback left — streaming
+      // immediately avoids holding thinking-only chunks up to EMPTY_PEEK_DEADLINE_MS.
       if (result.ok) {
+        const isLastModel = i === rotatedModels.length - 1;
         let peeked = null;
-        try {
-          peeked = await peekComboResponse(result, log);
-        } catch (peekErr) {
-          // peekStreamForContent is written not to throw; if reconstruction/Response
-          // construction ever does, result.body is already locked by getReader() and can no
-          // longer be streamed. Returning `result` would hand the client a locked, unreadable
-          // body. Degrade to a clean, valid (empty) SSE stream instead.
-          log.warn("COMBO", `empty-peek error on ${modelStr}, returning empty SSE: ${peekErr?.message || peekErr}`);
-          return new Response("data: [DONE]\n\n", {
-            status: 200,
-            headers: { "Content-Type": "text/event-stream" },
-          });
+        if (!isLastModel) {
+          try {
+            peeked = await peekComboResponse(result, log);
+          } catch (peekErr) {
+            // peekStreamForContent is written not to throw; if reconstruction/Response
+            // construction ever does, result.body is already locked by getReader() and can no
+            // longer be streamed. Returning `result` would hand the client a locked, unreadable
+            // body. Degrade to a clean, valid (empty) SSE stream instead.
+            log.warn("COMBO", `empty-peek error on ${modelStr}, returning empty SSE: ${peekErr?.message || peekErr}`);
+            return new Response("data: [DONE]\n\n", {
+              status: 200,
+              headers: { "Content-Type": "text/event-stream" },
+            });
+          }
         }
 
         if (!peeked) {
-          // Non-streaming (or non-SSE) response — not this peek's job. The zero-content
-          // JSON check still applies on a non-final seat.
-          const isLastModel = i === rotatedModels.length - 1;
+          // Non-streaming, non-SSE, or last candidate — zero-content JSON check still applies
+          // on non-final seats.
           if (!isLastModel) {
             const contentType = result.headers?.get?.("content-type") || "";
             if (contentType.includes("application/json")) {

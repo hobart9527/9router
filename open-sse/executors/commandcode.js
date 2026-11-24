@@ -1,25 +1,15 @@
-import { randomUUID } from "crypto";
 import { BaseExecutor } from "./base.js";
 import { PROVIDERS } from "../config/providers.js";
+import { buildCommandCodeHeaders } from "../shared/commandCodeHeaders.js";
 import { commandCodeToOpenAIResponse } from "../translator/response/commandcode-to-openai.js";
 import { SSE_DONE } from "../utils/sseConstants.js";
-
-// CommandCode's `x-project-slug` is the current project directory name (the official CLI
-// uses getCurrentProjectDirName()). Derive it from the outgoing request's workingDir so the
-// value is stable and meaningful instead of being invented per call.
-function projectSlugFromBody(body) {
-  const workingDir = body?.config?.workingDir;
-  if (typeof workingDir !== "string") return "unknown";
-  const parts = workingDir.split(/[\\/]+/).filter(Boolean);
-  return parts.length > 0 ? parts[parts.length - 1] : "unknown";
-}
 
 /**
  * CommandCodeExecutor — talks to https://api.commandcode.ai/alpha/generate
  *
  * Auth: Bearer <user_xxx> API key (stored as the connection's apiKey).
- * Sends the identity headers the official CLI sends (`x-session-id`, `User-Agent: cli`,
- * `x-project-slug`, `x-taste-learning`, plus the version headers from the provider config).
+ * Sends the official CLI's header set (shared/commandCodeHeaders.js); `x-session-id`
+ * matches the body's conversation-stable threadId.
  *
  * Upstream returns AI SDK v5 NDJSON (one JSON event per line, no `data:` prefix).
  * We translate each event to an OpenAI chat.completion.chunk and emit it as SSE so
@@ -32,29 +22,21 @@ export class CommandCodeExecutor extends BaseExecutor {
   }
 
   transformRequest(model, body, stream, credentials) {
-    body.stream = true;
+    if (!body || typeof body !== "object") return body || {};
+    if (body.params) {
+      body.params.stream = true;
+    } else {
+      body.stream = true;
+    }
     return body;
   }
 
-  buildHeaders(credentials, stream = true, _url = null, _model = null, body = null) {
-    const headers = {
-      "Content-Type": "application/json",
-      ...(this.config.headers || {}),
-      "x-session-id": randomUUID(),
-      // Identity headers the official CLI always sends. CommandCode gates behaviour on
-      // the client identity (an unknown version is answered with 403 upgrade_required),
-      // so emulate a current client instead of the hand-rolled pair used before.
-      // x-taste-learning defaults to true in the CLI config.
-      "User-Agent": "cli",
-      "x-project-slug": projectSlugFromBody(body),
-      "x-taste-learning": "true",
-    };
-
-    const token = credentials?.apiKey || credentials?.accessToken;
-    if (token) headers["Authorization"] = `Bearer ${token}`;
-
-    if (stream) headers["Accept"] = "text/event-stream";
-    return headers;
+  buildHeaders(credentials, stream = true, url, model, transformedBody) {
+    return buildCommandCodeHeaders({
+      apiKey: credentials?.apiKey || credentials?.accessToken,
+      sessionId: transformedBody?.threadId,
+      accept: stream ? "text/event-stream" : null,
+    });
   }
 
   async execute(opts) {

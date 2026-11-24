@@ -135,6 +135,11 @@ function extractAntigravitySession(body) {
     return m ? normalizeSessionId(m[1]) : null;
 }
 
+// x-client-request-id is request-scoped (unique per call). Scopes whose upstream keys prompt-cache
+// affinity on the session id must not treat it as one, or every request lands on a fresh cache shard.
+// opencode-go: measured 0-100% random hit with unique ids vs 100% with a stable session.
+const REQUEST_ID_NOT_SESSION_SCOPES = new Set(["kiro", "opencode-go"]);
+
 function extractClientSessionId(headers, body, scope = "") {
     // Claude Code sends the session in a header AND in metadata.user_id; the header
     // survives translation to formats that drop metadata (e.g. Responses API).
@@ -147,7 +152,7 @@ function extractClientSessionId(headers, body, scope = "") {
         const v = headerValue(headers, key);
         if (v) return v;
     }
-    const requestId = scope === "kiro" ? null : headerValue(headers, "x-client-request-id");
+    const requestId = REQUEST_ID_NOT_SESSION_SCOPES.has(scope) ? null : headerValue(headers, "x-client-request-id");
     if (requestId) return requestId;
     const fromBody =
         normalizeSessionId(body?.prompt_cache_key) ||

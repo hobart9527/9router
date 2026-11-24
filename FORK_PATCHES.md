@@ -1,5 +1,15 @@
 # 9router Fork 核心架构与定制优化记录
 
+## 候选整合：v0.5.123（2026-11-23，未提交、未部署）
+
+- 固定上游 `5ae63d22847e07042e235b40e1d926b65e509013`，fork 基线 `336d065a585fd7a349233c12459ed7b70b7b88bc`；生产目录、origin、compose 与镜像未变。
+- 保留 Caveman 多语言、Claude 客户端 UA/session/并发保护、CommandCode 参数与首包、Codex schema/reasoning、Gemini 字段与工具配对、非流式转换和动态账号惩罚。
+- Tool Schema 压缩改为识别 schema 上下文，保留同名业务字段与 JSON 字面量；生产 `toolSchemaCompactEnabled=true`、`toolSchemaDescMaxChars=0`。
+- Headroom 保留 15s/fail-open 与结构保护；恢复副本验证 `headroomEnabled=false`、`headroomMinBodyBytes=250000`。REA 保持关闭，未新增启用 provider。
+- 生产模型名单补丁采用规范化精确匹配；通用实体缺失文本不再触发 24 小时冷却，400 仍为请求级 noLock，原 400 最多轮换 3 账号限制不变。
+- Claude 真实 UA 不受新版全局版本重写影响；单一 executor 入口同时保留 Claude 并发限制与上游 Gemini 长输出续传。
+- 接入新版 CommandCode 身份/session、Claude 缓存与工具引用修复、SSE 错误及结束处理和网络稳定性修复；验证详情见隔离审计目录 `IMPLEMENTATION-RESULT.md`。
+
 本项目是 [decolua/9router](https://github.com/decolua/9router) 的维护与生产强化分支（Fork）。
 在跟随上游快速演进的同时，本分支面向高并发长会话 Agent 场景（特别是 Claude Code、Codex、Cline、Antigravity 等），沉淀并持续维护了一系列针对 **Token 消耗、协议稳定性、反异常封锁与长会话容错** 的核心优化。
 
@@ -141,3 +151,16 @@ Headroom 外部压缩代理针对大上下文非常有效，但对只有两三�
 - `open-sse/handlers/chatCore.js`：`handleChatCore` 入参同时保留 `headroomMinBodyBytes` 与上游 `customPromptEnabled`/`customPrompt`。
 - `open-sse/rtk/headroom.js`：保留 Responses 历史压缩放宽，新增 `hasNonPlainTextToolOutput`，结构化 JSON / 非文本工具输出不送往代理。
 - `tests/translator/__snapshots__/golden-url-header.test.js.snap`：按 fork 行为重生成（Claude 头部不再带 `Anthropic-Dangerous-Direct-Browser-Access`）。
+
+---
+
+## 同步记录：upstream v0.5.123 + 缓存/首包延迟修复（2026-11-24）
+
+合并 `decolua/9router` v0.5.123（固定 `5ae63d22`），保留 fork 优化，并追加以下线上缓存与延迟修复：
+
+- `open-sse/services/combo.js`：单模型 combo 或最后一个候选跳过 `peekComboResponse`，流式零缓冲透传（此前思考期最长静默 45 秒）。
+- `open-sse/config/runtimeConfig.js`：`EMPTY_PEEK_DEADLINE_MS` 默认值 45s → 5s（非末尾候选）。
+- `open-sse/utils/sessionManager.js`：`opencode-go` 不再把请求级 `x-client-request-id` 当会话 ID。该头每次不同，会让上游 `x-opencode-session` 缓存亲和随机失效（实测 0–100% 随机命中；固定会话稳定 100%）。回退到连接级稳定会话。
+- 新增测试：`combo-empty-failover`（末席零缓冲）、`session-manager` 与 `opencode-go-session`（请求 ID 不影响会话）。
+- 已知：`BUFFER_TOKENS = 2000`（`usageTracking.js`）会给经格式翻译的响应（如 commandcode）的 `input_tokens` 固定加 2000，使缓存命中率看起来偏低；真实命中率约 95–99%。未改动此设计。
+- 已知限制：无会话 ID 的请求在同一连接上共享一个上游会话（见 `docs/superpowers/specs/2026-09-04-opencode-go-session-header-design.md`）。

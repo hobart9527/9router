@@ -14,9 +14,9 @@ import { DefaultExecutor } from "../../open-sse/executors/default.js";
 import { getExecutor } from "../../open-sse/executors/index.js";
 
 const TRANSPORTS = [
-  { format: "openai", baseUrl: "https://opencode.ai/zen/go/v1/chat/completions", auth: { combined: true, header: "Authorization", scheme: "bearer" } },
-  { format: "claude", baseUrl: "https://opencode.ai/zen/go/v1/messages", auth: { combined: true, header: "x-api-key", scheme: "raw", anthropicVersion: true } },
-  { format: "openai-responses", baseUrl: "https://opencode.ai/zen/go/v1/responses", auth: { combined: true, header: "Authorization", scheme: "bearer" } },
+  { format: "openai", baseUrl: "https://opencode.ai/inference/go/openai/v1/chat/completions", auth: { combined: true, header: "Authorization", scheme: "bearer" } },
+  { format: "claude", baseUrl: "https://opencode.ai/inference/go/anthropic/v1/messages", auth: { combined: true, header: "x-api-key", scheme: "raw", anthropicVersion: true } },
+  { format: "openai-responses", baseUrl: "https://opencode.ai/inference/go/openai/v1/responses", auth: { combined: true, header: "Authorization", scheme: "bearer" } },
 ];
 
 function makeCredentials(overrides = {}) {
@@ -123,6 +123,24 @@ describe("OpenCode Go x-opencode-session", () => {
     expect(first).toBe(second);
     expect(first).toMatch(/^ses_[0-9a-f]{32}$/);
     expect(first).not.toContain("fallback-connection");
+  });
+
+  it("keeps one session across requests that differ only by x-client-request-id (cache affinity)", () => {
+    const executor = getExecutor("opencode-go");
+    const sessionFor = (requestId) => executor.prepareRequestCredentials({
+      body: { messages: [{ role: "user", content: "side call" }] },
+      credentials: makeCredentials({
+        connectionId: "rotating-connection",
+        rawHeaders: { "x-client-request-id": requestId },
+      }),
+      providerSessionId: null,
+      clientTool: "claude",
+    })._opencodeGoSession;
+
+    const first = sessionFor("req-1");
+    expect(first).toMatch(/^ses_[0-9a-f]{32}$/);
+    expect(sessionFor("req-2")).toBe(first);
+    expect(sessionFor("req-3")).toBe(first);
   });
 
   it("adds the prepared session to the actual fetch headers", async () => {

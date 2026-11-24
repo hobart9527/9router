@@ -285,14 +285,14 @@ describe("combo fall-through per client format (real combo.js + streaming pipeli
   await initTranslators();
 
   const LOG = { line: vi.fn(), errorLine: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() };
-  const memberResponse = async (frames, sourceFormat, targetFormat, model) => {
+  const memberResponse = async (frames, sourceFormat, targetFormat, model, delays = []) => {
     const body = { model, stream: true, messages: [{ role: "user", content: "hi" }] };
     const { onStreamComplete, streamDetailId } = buildOnStreamComplete({
       provider: "openai", model, connectionId: "conn", apiKey: "sk-x", requestStartTime: Date.now(), body, stream: true,
       clientRawRequest: { endpoint: "/v1/chat/completions" }, reqTag: "t", log: LOG,
     });
     const res = await handleStreamingResponse({
-      providerResponse: new Response(sseStream(frames), { status: 200, headers: { "Content-Type": "text/event-stream" } }),
+      providerResponse: new Response(sseStream(frames, delays), { status: 200, headers: { "Content-Type": "text/event-stream" } }),
       provider: "openai", model, sourceFormat, targetFormat, body, stream: true, requestStartTime: Date.now(),
       connectionId: "conn", apiKey: "sk-x", streamController: createStreamController({ log: LOG, provider: "openai", model }),
       onStreamComplete, streamDetailId, reqTag: "t", log: LOG,
@@ -393,5 +393,28 @@ describe("combo fall-through per client format (real combo.js + streaming pipeli
       expect(tried).toEqual(["openai/m0"]);
       expect(out).toContain('"reason":"content_filter"');
     });
+  });
+
+  it("last/single combo member skips peekComboResponse and returns stream immediately without buffering reasoning", async () => {
+    const t0 = Date.now();
+    const res = await handleComboChat({
+      body: { messages: [{ role: "user", content: "hi" }] },
+      models: ["openai/m0"],
+      handleSingleModel: async (_b, m) => memberResponse(
+        [ROLE, REASONING, C("delayed"), STOP, DONE],
+        FORMATS.CLAUDE,
+        FORMATS.OPENAI,
+        m,
+        [0, 0, 300]
+      ),
+      log: LOG,
+      comboName: `last-skip-${Math.random()}`,
+      comboStrategy: "fallback",
+    });
+    const returnElapsed = Date.now() - t0;
+    expect(returnElapsed).toBeLessThan(120);
+    const out = await res.text();
+    expect(out).toContain("thinking_delta");
+    expect(out).toContain("delayed");
   });
 });

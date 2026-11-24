@@ -189,3 +189,52 @@ describe("defaults", () => {
     expect(DEFAULT_DESC_MAX_CHARS).toBe(0);
   });
 });
+
+describe("compactToolSchema - schema names and literal values", () => {
+  it("keeps annotation-named properties, definitions, and literal defaults", () => {
+    const literal = { title: "  exact  value  ", description: "  literal  text  ", examples: [1] };
+    const schema = {
+      type: "object",
+      title: "annotation",
+      properties: {
+        title: { type: "string", title: "drop" },
+        examples: { type: "object", default: literal },
+        description: { type: "string" },
+        readOnly: { type: "boolean" },
+      },
+      required: ["title", "examples", "description", "readOnly"],
+      $defs: { title: { type: "object", properties: { examples: { type: "string", title: "drop" } } } },
+      dependentSchemas: { readOnly: { properties: { title: { type: "string" } } } },
+      enum: [literal],
+    };
+    const result = compactToolSchema([{ name: "test", input_schema: schema }], { descMaxChars: 0 });
+    const compacted = result.tools[0].input_schema;
+    expect(Object.keys(compacted.properties)).toEqual(schema.required);
+    expect(compacted.required).toEqual(schema.required);
+    expect(compacted.properties.title).toEqual({ type: "string" });
+    expect(compacted.$defs.title.properties.examples).toEqual({ type: "string" });
+    expect(compacted.dependentSchemas.readOnly.properties.title).toEqual({ type: "string" });
+    expect(compacted.properties.examples.default).toEqual(literal);
+    expect(compacted.enum).toEqual([literal]);
+    expect(compacted).not.toHaveProperty("title");
+  });
+});
+
+describe("compactToolSchema - nested schema containers", () => {
+  it("compacts nested schemas without touching dependencies or const literals", () => {
+    const schema = {
+      definitions: { examples: { title: "drop", type: "string" } },
+      dependencies: { title: ["examples"], examples: { properties: { title: { title: "drop", type: "string" } } } },
+      allOf: [{ properties: { deprecated: { type: "boolean", deprecated: true } } }],
+      items: { properties: { writeOnly: { type: "string", writeOnly: true } } },
+      const: { title: "keep", description: "  exact  " },
+    };
+    const out = compactToolSchema([{ type: "function", function: { name: "x", parameters: schema } }]).tools[0].function.parameters;
+    expect(out.definitions.examples).toEqual({ type: "string" });
+    expect(out.dependencies.title).toEqual(["examples"]);
+    expect(out.dependencies.examples.properties.title).toEqual({ type: "string" });
+    expect(out.allOf[0].properties.deprecated).toEqual({ type: "boolean" });
+    expect(out.items.properties.writeOnly).toEqual({ type: "string" });
+    expect(out.const).toEqual({ title: "keep", description: "  exact  " });
+  });
+});
